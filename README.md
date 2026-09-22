@@ -3,7 +3,7 @@
 Settings for the **Glorious Model O 2 Wireless** on Linux, with a GTK 4 /
 libadwaita window and a CLI. It was built for Omarchy but works on any
 distro. It covers what Glorious CORE does for this mouse, apart from firmware
-updates:
+updates (see `docs/FIRMWARE.md`):
 
 - DPI stages: 1–6 stages, 100–26000 in steps of 50, with an indicator colour each
   and the stage the mouse starts on

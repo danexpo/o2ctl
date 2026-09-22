@@ -22,6 +22,7 @@ consumer, system and vendor-input (report 6) collections.
 
 - **Commands** are `HIDIOCSFEATURE` with 64 bytes, `[03, cmd, route, ...]`.
 - **Reads** (`HIDIOCGFEATURE`) time out on the dongle (**verified**). CORE never reads settings back either.
+- **Firmware updates** are described in FIRMWARE.md; o2ctl doesn't do them.
 - **Firmware** is the USB `bcdDevice` (`0x0259` → "0259"), which is what CORE's native `GetFWVersion` returns.
 
 | cmd | Meaning |
