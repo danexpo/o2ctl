@@ -12,6 +12,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import __version__, bindings, config  # noqa: E402
+from . import battery as B  # noqa: E402
 from . import device as D  # noqa: E402
 from . import protocol as P  # noqa: E402
 
@@ -195,7 +196,7 @@ class Window(Adw.ApplicationWindow):
         status = Adw.PreferencesGroup(title="Mouse")
         self.connection_row = Adw.ActionRow(title="Connection", subtitle="Looking for the mouse…")
         self.connection_row.add_prefix(Gtk.Image(icon_name="network-wireless-symbolic"))
-        self.battery_row = Adw.ActionRow(title="Battery", subtitle="Waiting for a report (about a minute)")
+        self.battery_row = Adw.ActionRow(title="Battery", subtitle="Waiting for a report (can take a few minutes)")
         self.battery_row.add_prefix(Gtk.Image(icon_name="battery-symbolic"))
         self.battery_bar = Gtk.LevelBar(min_value=0, max_value=100, valign=Gtk.Align.CENTER, width_request=120)
         self.battery_bar.add_offset_value("low", 20)
@@ -562,14 +563,11 @@ class Window(Adw.ApplicationWindow):
             self.banner.set_revealed(True)
 
     def show_battery(self):
-        battery = self.state.get("battery")
-        if not battery:
+        reading = B.load()
+        if not reading:
             return
-        age = int(time.time() - battery["time"])
-        stale = "" if age < 180 else f" · {age // 60} min ago"
-        charging = ", charging" if battery["charging"] else ""
-        self.battery_row.set_subtitle(f"{battery['level']}%{charging}{stale}")
-        self.battery_bar.set_value(battery["level"])
+        self.battery_row.set_subtitle(B.describe(reading))
+        self.battery_bar.set_value(reading["level"])
         self.battery_bar.set_visible(True)
 
     def listen(self):
@@ -586,8 +584,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_event(self, event):
         if event["event"] == "battery":
-            self.state["battery"] = {"level": event["level"], "charging": event["charging"], "time": time.time()}
-            config.save(self.state)
+            B.record(event)
             self.show_battery()
         elif event["event"] == "profile" and event["profile"] != self.number:
             self.state["active_profile"] = event["profile"]

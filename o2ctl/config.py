@@ -54,7 +54,6 @@ def default_state():
         "version": 1,
         "active_profile": 1,
         "profiles": [default_profile() for _ in range(P.PROFILE_COUNT)],
-        "battery": None,
     }
 
 
@@ -70,6 +69,7 @@ def _merge(defaults, saved):
 
 def normalise(state):
     state = _merge(default_state(), state)
+    state.pop("battery", None)  # moved to battery.status_path()
     profiles = list(state.get("profiles") or [])[: P.PROFILE_COUNT]
     while len(profiles) < P.PROFILE_COUNT:
         profiles.append(default_profile())

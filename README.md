@@ -24,8 +24,9 @@ yet). Bluetooth isn't supported: switch the mouse to 2.4 GHz or plug it in.
 ./install.sh
 ```
 
-This puts `o2ctl` in `~/.local/bin` and adds a **Model O 2 Settings** entry
-to the app launcher (Super + Space on Omarchy). You need system
+This puts `o2ctl` in `~/.local/bin`, adds a **Model O 2 Settings** entry
+to the app launcher (Super + Space on Omarchy), starts the battery watcher
+and adds the mouse battery to the Omarchy bar. You need system
 `python-gobject` and `libadwaita`, which Omarchy already ships.
 
 Access without root needs a udev rule. The installer prints the two sudo
@@ -59,11 +60,39 @@ o2ctl bind forward default
 o2ctl profile 2                        # switch the onboard profile
 o2ctl -p 3 dpi 800 1600 ...            # edit a profile without switching to it
 o2ctl apply --all                      # push everything saved to the mouse
-o2ctl battery --wait 90
+o2ctl battery                          # cached level; --wait 90 for a fresh one
 o2ctl gui --page lighting
 ```
 
 Run `o2ctl <command> -h` for details. `o2ctl bind -h` lists every action.
+
+## Battery in the bar
+
+The mouse can't be asked for its battery level; it sends a report on its own
+every one to few minutes. After a restart the bar shows the last cached
+level until the next report. The `o2ctl-watch` user service
+(`o2ctl watch`) listens for those reports, caches the latest in
+`~/.local/state/o2ctl/battery.json` and sends a notification at 15 % and
+again at 5 %.
+
+The installer adds this entry to the right side of the Omarchy bar in
+`~/.config/omarchy/shell.json`, once. Delete it there and it stays deleted.
+
+```json
+{ "id": "o2ctl-battery", "type": "command", "exec": "~/.local/bin/o2ctl battery --bar",
+  "interval": 30, "onClick": "~/.local/bin/o2ctl gui" }
+```
+
+It shows a mouse icon and the level, a bolt while charging, and highlights
+at 15 % or below. The tooltip says how old the reading is. It hides when
+neither the dongle nor the cable is plugged in. `o2ctl battery --bar`
+prints Waybar-style JSON, so the same command works as a Waybar
+`custom` module with `"return-type": "json"`.
+
+```sh
+systemctl --user status o2ctl-watch
+journalctl --user -u o2ctl-watch -f
+```
 
 ## How the settings are kept
 

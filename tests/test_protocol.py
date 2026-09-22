@@ -7,6 +7,7 @@ import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from o2ctl import battery as B  # noqa: E402
 from o2ctl import bindings, config  # noqa: E402
 from o2ctl import device as D  # noqa: E402
 from o2ctl import protocol as P  # noqa: E402
@@ -315,6 +316,58 @@ class WriteTimingTest(unittest.TestCase):
         dev = D.Device("/dev/hidraw9", P.DONGLE)
         dev.activate_profile(2)
         self.assertEqual(self.log[0][0], "write")
+
+
+class BatteryTest(unittest.TestCase):
+    def test_bar_hidden_without_receiver(self):
+        self.assertEqual(B.bar_output({"level": 50, "charging": False, "time": 0}, False)["text"], "")
+
+    def test_bar_waiting_for_first_report(self):
+        out = B.bar_output(None, True)
+        self.assertEqual(out["text"], B.ICON)
+        self.assertIn("waiting", out["tooltip"])
+
+    def test_bar_level_charging_and_classes(self):
+        now = 1000.0
+        out = B.bar_output({"level": 47, "charging": False, "time": now - 10}, True, now)
+        self.assertEqual(out["text"], f"{B.ICON} 47%")
+        self.assertEqual(out["class"], [])
+        self.assertEqual(out["tooltip"], "Model O 2: 47%")
+        out = B.bar_output({"level": 12, "charging": False, "time": now - 1200}, True, now)
+        self.assertEqual(out["class"], ["low", "active", "stale"])
+        self.assertEqual(out["tooltip"], "Model O 2: 12% · 20 min ago")
+        out = B.bar_output({"level": 12, "charging": True, "time": now}, True, now)
+        self.assertEqual(out["text"], f"{B.ICON} 12% {B.CHARGING}")
+        self.assertEqual(out["class"], [])
+
+    def test_low_alert_once_per_threshold(self):
+        alert = B.LowBatteryAlert((15, 5))
+        self.assertIsNone(alert.check(40, False))
+        self.assertEqual(alert.check(15, False), 15)
+        self.assertIsNone(alert.check(14, False))
+        self.assertEqual(alert.check(5, False), 5)
+        self.assertIsNone(alert.check(3, False))
+        self.assertIsNone(alert.check(3, True))      # charging re-arms
+        self.assertEqual(alert.check(15, False), 15)
+
+    def test_low_alert_skipping_levels_reports_lowest(self):
+        alert = B.LowBatteryAlert((15, 5))
+        self.assertEqual(alert.check(4, False), 5)
+        self.assertIsNone(alert.check(4, False))
+
+    def test_record_and_load_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "o2ctl", "battery.json")
+            self.assertIsNone(B.load(path))
+            B.record({"event": "battery", "level": 87, "charging": True}, path, now=5.0)
+            self.assertEqual(B.load(path), {"level": 87, "charging": True, "time": 5.0})
+            with open(path, "w") as f:
+                f.write("{broken")
+            self.assertIsNone(B.load(path))
+
+    def test_old_config_battery_key_dropped(self):
+        state = config.normalise({"battery": {"level": 1, "charging": False, "time": 0}})
+        self.assertNotIn("battery", state)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,11 @@
 """o2ctl: configure a Glorious Model O 2 Wireless from the terminal."""
 
 import argparse
+import json
 import sys
 import time
 
+from . import battery as B
 from . import bindings, config
 from . import device as D
 from . import protocol as P
@@ -52,11 +54,11 @@ def cmd_status(state, args):
         print("Connected over Bluetooth (not configurable; use the dongle or cable)")
     else:
         print("Not connected")
-    battery = state.get("battery")
-    if battery:
-        age = int(time.time() - battery["time"]) // 60
-        charging = ", charging" if battery["charging"] else ""
-        print(f"Battery: {battery['level']}%{charging} (reported {age} min ago)")
+    reading = B.load()
+    if reading:
+        age = int(time.time() - reading["time"]) // 60
+        charging = ", charging" if reading["charging"] else ""
+        print(f"Battery: {reading['level']}%{charging} (reported {age} min ago)")
     number = _target(state, args)
     prof = config.profile(state, number)
     perf, light = prof["performance"], prof["lighting"]
@@ -171,28 +173,36 @@ def cmd_reset(state, args):
 
 
 def cmd_battery(state, args):
+    if args.bar:
+        out = B.bar_output(B.load(), bool(D.find_devices()))
+        if out["text"]:  # print nothing to hide: the Omarchy bar shows raw output for empty "text"
+            print(json.dumps(out, ensure_ascii=False))
+        return 0
     if args.wait:
         dev = _device_or_none()
         if dev is None:
             return 1
         for event in dev.events(timeout=args.wait):
             if event["event"] == "battery":
-                record_battery(state, event)
-                config.save(state)
+                B.record(event)
                 break
         else:
             print("No battery report in that time. The mouse sends one on its own "
                   "schedule; try a longer --wait.", file=sys.stderr)
-    battery = state.get("battery")
-    if not battery:
-        print("No battery reading yet (try: o2ctl battery --wait 600)")
+    reading = B.load()
+    if not reading:
+        print("No battery reading yet (run o2ctl watch, or: o2ctl battery --wait 90)")
         return 1
-    print(f"{battery['level']}%{' charging' if battery['charging'] else ''}")
+    print(B.describe(reading))
     return 0
 
 
-def record_battery(state, event):
-    state["battery"] = {"level": event["level"], "charging": event["charging"], "time": time.time()}
+def cmd_watch(state, args):
+    try:
+        B.watch(log=lambda msg: print(msg, flush=True))
+    except KeyboardInterrupt:
+        pass
+    return 0
 
 
 def cmd_listen(state, args):
@@ -204,8 +214,7 @@ def cmd_listen(state, args):
         for event in dev.events(timeout=args.seconds):
             print(time.strftime("%H:%M:%S"), event, flush=True)
             if event["event"] == "battery":
-                record_battery(state, event)
-                config.save(state)
+                B.record(event)
     except KeyboardInterrupt:
         pass
     return 0
@@ -291,7 +300,11 @@ def build_parser():
 
     s = sub.add_parser("battery", help="last reported battery level")
     s.add_argument("-w", "--wait", type=float, metavar="SECONDS", help="wait for a fresh report")
+    s.add_argument("--bar", action="store_true", help="print JSON for the Omarchy (or Waybar) status bar")
     s.set_defaults(func=cmd_battery)
+
+    s = sub.add_parser("watch", help="keep the battery level cached and warn when it runs low")
+    s.set_defaults(func=cmd_watch)
 
     s = sub.add_parser("listen", help="print status reports from the mouse")
     s.add_argument("seconds", nargs="?", type=float)

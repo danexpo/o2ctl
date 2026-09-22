@@ -1,0 +1,12 @@
+[Unit]
+Description=o2ctl: cache the Model O 2 battery level and warn when it runs low
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/o2ctl watch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target
