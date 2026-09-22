@@ -3,7 +3,9 @@
 This comes from reading Glorious CORE 2.1.21 (`resources/app.asar`,
 `out/main/index.js`: `MouseV2DeviceHandler`, `PreparePerformanceBuffers2`,
 `PreparePresetEffectBuffers`, `PrepareKeybindingBuffers2`,
-`PrepareProfileUpdateBuffer2`). Anything marked **verified** was confirmed
+`PrepareProfileUpdateBuffer2`). The macro format comes from CORE 2.1.3
+(`ModelOV2Series.SetMacroDataToDevice` and `MacroToData`; the 2.1.21 installer
+couldn't be unpacked on Linux). Anything marked **verified** was confirmed
 on a real mouse through the dongle.
 
 ## Transport
@@ -28,7 +30,7 @@ consumer, system and vendor-input (report 6) collections.
 | 02  | lighting |
 | 03  | button bindings |
 | 04  | performance (DPI, polling, LOD, debounce, motion sync) |
-| 05  | macro data (not implemented) |
+| 05  | macro data |
 
 Profiles are numbered 1–3 on the wire.
 
@@ -88,10 +90,41 @@ the cable.
 | `03 lo hi 00` | consumer usage, e.g. `03 cd 00` play/pause. |
 | `77 00 00 00` | show battery level. |
 | `00 00 00 00` | disabled. |
-| `20+n mode` | macro n (mode 1 once, E0 repeat while held, E1 toggle); not implemented. |
+| `1F+id mode 00 00` | macro `id` (1-based, so the first is `20`). Mode: `01` play once, `E0` repeat while held, `E1` repeat until pressed again. |
 
 - **Dongle:** `03 03 FB <chunk> <profile>` + table[0:12] and table[12:24], each at byte 5.
 - **Cable:** `03 03 FA <profile>` + table[0:36] at byte 8.
+
+## 05 macros
+
+Macros are stored by id, apart from the profiles; a button in any profile
+plays one through its slot value above. Each step is 3 bytes:
+
+| byte | value |
+|------|-------|
+| 0 | `80` if the step presses, `00` if it releases, OR the delay's high 7 bits |
+| 1 | delay, low byte |
+| 2 | key |
+
+The delay is the wait in ms after the step (CORE sends 1 after the last one).
+Keys are keyboard HID usages, modifiers included (`E0` left ctrl … `E7`
+right super), and `B7` left, `B8` right, `B9` middle, `BA` back, `BB`
+forward for mouse buttons.
+
+**Verified** through the dongle: macro 1 = `o` down, `o` up, `2` down, `2` up,
+20 ms apart, sent as `03 05 fb 00 00 02 04 80 14 12 00 14 12 80 14 1f` and
+`03 05 fb 00 01 02 04 00 14 1f`, then bound with slot `20 01 00 00`, types `o2`.
+The keyboard interface reports the steps 20 ms apart.
+Also **verified**: `E1` (shift) comes out as the modifier bit, and mode `E0`
+repeats while the button is held and stops on release. The wait after the
+last step came out about twice as long as set (300 ms → ~600 ms between
+repeats). CORE builds the steps in a 256-byte buffer, so a
+macro holds at most 85 steps. CORE doesn't cap the number of macros; o2ctl
+uses ids 1–16.
+
+- **Dongle:** packets `03 05 FB <id-1> <chunk> <chunks> <steps>` with 3 steps (9 bytes) from byte 7.
+- **Cable:** packets `03 05 FA <id-1> <chunk> <chunks> <steps> 00` with 18 steps (54 bytes) from byte 8.
+- CORE waits 30 ms between packets, and 200 ms after the last one over the dongle.
 
 ## Events (input report 6 on the same interface)
 

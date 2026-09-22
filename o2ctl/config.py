@@ -54,6 +54,7 @@ def default_state():
         "version": 1,
         "active_profile": 1,
         "profiles": [default_profile() for _ in range(P.PROFILE_COUNT)],
+        "macros": [],
     }
 
 
@@ -73,7 +74,14 @@ def normalise(state):
     profiles = list(state.get("profiles") or [])[: P.PROFILE_COUNT]
     while len(profiles) < P.PROFILE_COUNT:
         profiles.append(default_profile())
-    state["profiles"] = [_merge(default_profile(), p) for p in profiles]
+    merged = []
+    for saved in profiles:
+        prof = _merge(default_profile(), saved)
+        # A binding is replaced whole, never merged with the default one.
+        if isinstance(saved, dict) and isinstance(saved.get("buttons"), dict):
+            prof["buttons"] = copy.deepcopy(saved["buttons"])
+        merged.append(prof)
+    state["profiles"] = merged
     for profile in state["profiles"]:
         colors = profile["lighting"]["colors"]
         profile["lighting"]["colors"] = (list(colors) + DEFAULT_PALETTE)[: P.MAX_COLORS]
@@ -85,6 +93,10 @@ def normalise(state):
         if not perf["dpi_stages"]:
             perf["dpi_stages"] = default_profile()["performance"]["dpi_stages"]
         perf["active_stage"] = min(max(0, perf["active_stage"]), len(perf["dpi_stages"]) - 1)
+    state["macros"] = sorted(
+        (m for m in state["macros"] if isinstance(m, dict)
+         and m.get("id") in range(1, P.MAX_MACROS + 1) and m.get("name") and m.get("steps")),
+        key=lambda m: m["id"])
     if state["active_profile"] not in range(1, P.PROFILE_COUNT + 1):
         state["active_profile"] = 1
     return state

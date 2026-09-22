@@ -1,4 +1,5 @@
 import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -10,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from o2ctl import battery as B  # noqa: E402
 from o2ctl import bindings, config  # noqa: E402
 from o2ctl import device as D  # noqa: E402
+from o2ctl import macros as M  # noqa: E402
 from o2ctl import protocol as P  # noqa: E402
 
 
@@ -190,6 +192,126 @@ class BindingTextTest(unittest.TestCase):
     def test_aliases(self):
         self.assertEqual(bindings.parse("key:Control+Esc"),
                          {"type": "key", "key": "escape", "modifiers": ["ctrl"]})
+
+
+class MacroTest(unittest.TestCase):
+    COPY = [
+        {"key": "ctrl", "down": True, "delay": 20},
+        {"key": "c", "down": True, "delay": 20},
+        {"key": "c", "down": False, "delay": 20},
+        {"key": "ctrl", "down": False, "delay": 20},
+    ]
+
+    def test_hardware_verified_macro(self):
+        # Sent to a real Model O 2 Wireless through the dongle and bound to a button; it typed "o2".
+        self.assertEqual(P.macro_packets(1, M.parse("o 2"), P.DONGLE), [
+            hexpad("03 05 fb 00 00 02 04 80 14 12 00 14 12 80 14 1f"),
+            hexpad("03 05 fb 00 01 02 04 00 14 1f"),
+        ])
+
+    def test_dongle_packets(self):
+        # 3 steps per packet from byte 7: [03 05 fb id-1 chunk chunks count].
+        p = P.macro_packets(2, self.COPY, P.DONGLE)
+        self.assertEqual(p, [
+            hexpad("03 05 fb 01 00 02 04 80 14 e0 80 14 06 00 14 06"),
+            hexpad("03 05 fb 01 01 02 04 00 14 e0"),
+        ])
+
+    def test_wired_packet(self):
+        (p,) = P.macro_packets(1, self.COPY, P.WIRED)
+        self.assertEqual(p, hexpad("03 05 fa 00 00 01 04 00 80 14 e0 80 14 06 00 14 06 00 14 e0"))
+
+    def test_long_delay_and_mouse_button(self):
+        steps = [{"key": "mouse:left", "down": True, "delay": 1000},
+                 {"key": "mouse:left", "down": False, "delay": P.MACRO_DELAY_MAX}]
+        self.assertEqual(P.macro_block(steps), bytes.fromhex("83 e8 b7 7f ff b7"))
+
+    def test_chunking_at_the_limit(self):
+        steps = [{"key": "a", "down": i % 2 == 0, "delay": 1} for i in range(P.MACRO_MAX_STEPS - 1)]
+        steps.append({"key": "a", "down": False, "delay": 1})
+        self.assertEqual(len(P.macro_packets(1, steps, P.DONGLE)), 29)
+        self.assertEqual(len(P.macro_packets(1, steps, P.WIRED)), 5)
+        with self.assertRaises(P.ProtocolError):
+            P.macro_block(steps + [steps[0]])
+
+    def test_validation(self):
+        bad = [
+            [],
+            [{"key": "a", "down": True, "delay": 0}],
+            [{"key": "a", "down": True, "delay": P.MACRO_DELAY_MAX + 1}],
+            [{"key": "hyper", "down": True, "delay": 5}],
+            [{"key": "mouse:side", "down": True, "delay": 5}],
+        ]
+        for steps in bad:
+            with self.assertRaises(P.ProtocolError, msg=steps):
+                P.macro_block(steps)
+        with self.assertRaises(P.ProtocolError):
+            P.macro_packets(P.MAX_MACROS + 1, self.COPY, P.DONGLE)
+
+    def test_binding_slot(self):
+        # CORE: [0x1F + macro id, mode]; mode 1 once, E0 repeat while held, E1 toggle.
+        saved = [{"id": 1, "name": "copy", "steps": self.COPY}, {"id": 3, "name": "spam", "steps": self.COPY}]
+        cases = {"macro:copy": "20 01 00 00", "macro:spam:repeat": "22 e0 00 00", "macro:3:toggle": "22 e1 00 00"}
+        for text, expected in cases.items():
+            binding = bindings.parse(text, saved)
+            self.assertEqual(P.binding_slot(binding), bytes.fromhex(expected), text)
+        self.assertEqual(bindings.format(bindings.parse("macro:3:toggle", saved), saved), "macro:spam:toggle")
+        self.assertEqual(bindings.describe({"type": "macro", "macro": 1, "mode": "once"}, saved),
+                         "Macro copy (play once)")
+        with self.assertRaises(P.ProtocolError):
+            bindings.parse("macro:nope", saved)
+
+    def test_text(self):
+        self.assertEqual(M.parse("ctrl+c"), self.COPY)
+        steps = M.parse("Control+Esc 150ms +shift a -shift mouse:left", delay=10)
+        self.assertEqual([(s["key"], s["down"], s["delay"]) for s in steps], [
+            ("ctrl", True, 10), ("escape", True, 10), ("escape", False, 10), ("ctrl", False, 150),
+            ("shift", True, 10), ("a", True, 10), ("a", False, 10), ("shift", False, 10),
+            ("mouse:left", True, 10), ("mouse:left", False, 10),
+        ])
+        self.assertEqual(M.parse("a 100ms 50ms")[-1]["delay"], 150)
+        for text in ("", "100ms a", "+shift a", "a+", "hyper", "a 0ms"):
+            with self.assertRaises(P.ProtocolError, msg=text):
+                M.parse(text)
+
+    def test_text_round_trip(self):
+        for text in ("ctrl+c 100ms ctrl+v", "a b c", "+shift a 5ms -shift", "mouse:left 2000ms mouse:right",
+                     "ctrl+shift+t", "+a +b -a -b"):
+            steps = M.parse(text)
+            self.assertEqual(M.parse(M.format(steps)), steps, text)
+        self.assertEqual(M.format(M.parse("ctrl+c 100ms ctrl+v")), "ctrl+c 100ms ctrl+v")
+
+    def test_saved_macros(self):
+        state = config.default_state()
+        a = M.put(state, "a", M.parse("a"))
+        b = M.put(state, "b", M.parse("b"))
+        self.assertEqual((a["id"], b["id"]), (1, 2))
+        state["profiles"][1]["buttons"]["forward"] = {"type": "macro", "macro": 1, "mode": "once"}
+        self.assertEqual(M.users(state, 1), [(2, "forward")])
+        self.assertEqual(M.used_by_profile(state, state["profiles"][1]), [a])
+        self.assertEqual(M.delete(state, a), [2])
+        self.assertEqual(state["profiles"][1]["buttons"]["forward"], P.DEFAULT_BINDINGS["forward"])
+        self.assertEqual(M.put(state, "c", M.parse("c"))["id"], 1)  # freed ids are reused
+        self.assertIs(M.put(state, "b", M.parse("x")), b)
+        self.assertEqual(b["steps"], M.parse("x"))
+        for name in ("", "12", "a:b"):
+            with self.assertRaises(P.ProtocolError):
+                M.put(state, name, M.parse("a"))
+
+    def test_cli_saves_without_the_mouse(self):
+        from o2ctl import cli
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["macro", "set", "cp", "ctrl+c", "ctrl+v", "-n"]), 0)
+            self.assertEqual(cli.main(["bind", "back", "macro:cp:repeat", "-n", "-p", "2"]), 0)
+            state = config.load()
+            self.assertEqual(state["macros"][0]["name"], "cp")
+            self.assertEqual(state["profiles"][1]["buttons"]["back"], {"type": "macro", "macro": 1, "mode": "repeat"})
+            self.assertEqual(cli.main(["macro", "delete", "cp", "-n"]), 0)
+            state = config.load()
+            self.assertEqual(state["macros"], [])
+            self.assertEqual(state["profiles"][1]["buttons"]["back"], P.DEFAULT_BINDINGS["back"])
 
 
 class ConfigTest(unittest.TestCase):

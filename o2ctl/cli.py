@@ -7,6 +7,7 @@ import time
 
 from . import battery as B
 from . import bindings, config
+from . import macros as M
 from . import device as D
 from . import protocol as P
 
@@ -22,8 +23,8 @@ def _device_or_none(quiet=False):
     return dev
 
 
-def _commit(state, number, blocks, args):
-    """Save, then write the changed blocks to the mouse unless --no-apply."""
+def _commit(state, number, blocks, args, macros=()):
+    """Save, then write the changed blocks (and macros) to the mouse unless --no-apply."""
     config.save(state)
     if args.no_apply:
         return 0
@@ -31,6 +32,10 @@ def _commit(state, number, blocks, args):
     if dev is None:
         print("Saved; will apply next time (o2ctl apply).", file=sys.stderr)
         return 1
+    for macro in macros:
+        dev.write_macro(macro)
+    if not blocks:
+        return 0
     prof = config.profile(state, number)
     for block in blocks:
         getattr(dev, f"write_{block}")(number, prof)
@@ -79,7 +84,10 @@ def cmd_status(state, args):
     print(f"  Lighting:     {P.EFFECT_LABELS[light['effect']]}, brightness {light['brightness']}%, "
           f"speed {light['speed']}%{colors}")
     for button in P.BUTTONS:
-        print(f"  {P.BUTTON_LABELS[button] + ':':29}{bindings.describe(prof['buttons'][button])}")
+        print(f"  {P.BUTTON_LABELS[button] + ':':29}"
+              f"{bindings.describe(prof['buttons'][button], state['macros'])}")
+    if state["macros"]:
+        print(f"\n{len(state['macros'])} saved macro(s): o2ctl macro list")
     return 0
 
 
@@ -88,6 +96,13 @@ def cmd_apply(state, args):
     if dev is None:
         return 1
     numbers = range(1, P.PROFILE_COUNT + 1) if args.all else [_target(state, args)]
+    if args.all:
+        wanted = state["macros"]
+    else:
+        wanted = M.used_by_profile(state, config.profile(state, numbers[0]))
+    for macro in wanted:
+        dev.write_macro(macro)
+        print(f"Wrote macro {macro['name']}.")
     for number in numbers:
         dev.write_profile(number, config.profile(state, number))
         print(f"Wrote profile {number}.")
@@ -162,8 +177,74 @@ def cmd_bind(state, args):
     if args.action == "default":
         buttons[args.button] = dict(P.DEFAULT_BINDINGS[args.button])
     else:
-        buttons[args.button] = bindings.parse(args.action)
-    return _commit(state, number, ["buttons"], args)
+        buttons[args.button] = bindings.parse(args.action, state["macros"])
+    binding = buttons[args.button]
+    # Store the macro too, in case it was saved with --no-apply or the mouse was reset.
+    wanted = [M.by_id(state, binding["macro"])] if binding["type"] == "macro" else []
+    return _commit(state, number, ["buttons"], args, wanted)
+
+
+def _macro_or_error(state, ref):
+    macro = M.find(state, ref)
+    if macro is None:
+        raise P.ProtocolError(f"no macro called {ref!r} (see o2ctl macro list)")
+    return macro
+
+
+def _uses(state, macro):
+    used = M.users(state, macro["id"])
+    return ", ".join(f"profile {n} {P.BUTTON_LABELS[b].split(' (')[0].lower()}" for n, b in used)
+
+
+def cmd_macro_list(state, args):
+    if not state["macros"]:
+        print("No macros yet. Make one with, for example:\n"
+              "  o2ctl macro set copy-paste ctrl+c 100ms ctrl+v\n"
+              "  o2ctl bind forward macro:copy-paste")
+        return 0
+    for macro in state["macros"]:
+        steps = len(macro["steps"])
+        print(f"{macro['id']:>2}  {macro['name']}  ({steps} step{'s' if steps != 1 else ''})")
+        print(f"    {M.describe(macro['steps'])}")
+        uses = _uses(state, macro)
+        print(f"    on: {uses}" if uses else "    not bound to a button")
+    return 0
+
+
+def cmd_macro_show(state, args):
+    macro = _macro_or_error(state, args.name)
+    print(M.format(macro["steps"]))
+    return 0
+
+
+def cmd_macro_set(state, args):
+    steps = M.parse(" ".join(args.sequence), args.delay)
+    new = M.find(state, args.name) is None
+    macro = M.put(state, args.name, steps)
+    result = _commit(state, None, [], args, [macro])
+    print(f"{'Saved' if new else 'Updated'} macro {macro['name']} ({len(steps)} steps).")
+    if not M.users(state, macro["id"]):
+        print(f"Bind it to a button with: o2ctl bind forward macro:{macro['name']}")
+    return result
+
+
+def cmd_macro_delete(state, args):
+    macro = _macro_or_error(state, args.name)
+    uses = _uses(state, macro)
+    changed = M.delete(state, macro)
+    config.save(state)
+    print(f"Deleted macro {macro['name']}." + (f" Reset to default: {uses}." if uses else ""))
+    if not changed or args.no_apply:
+        return 0
+    dev = _device_or_none()
+    if dev is None:
+        print("Saved; will apply next time (o2ctl apply --all).", file=sys.stderr)
+        return 1
+    for number in changed:
+        dev.write_buttons(number, config.profile(state, number))
+    if any(n != state["active_profile"] for n in changed):
+        dev.activate_profile(state["active_profile"])
+    return 0
 
 
 def cmd_reset(state, args):
@@ -290,10 +371,33 @@ def build_parser():
     s = sub.add_parser("bind", parents=[common], help="remap a button",
                        description="Actions: " + ", ".join(P.MOUSE_ACTIONS) +
                        ", dpi-shift:DPI, media:" + "|".join(P.MEDIA_ACTIONS) +
-                       ", key:COMBO (e.g. key:ctrl+c), default")
+                       ", key:COMBO (e.g. key:ctrl+c), macro:NAME[:once|repeat|toggle], default")
     s.add_argument("button", choices=P.BUTTONS)
     s.add_argument("action")
     s.set_defaults(func=cmd_bind)
+
+    s = sub.add_parser("macro", help="make, list and delete macros",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       description="\n\n".join(M.__doc__.split("\n\n")[1:3]) +
+                       "\n\nBind a macro with: o2ctl bind BUTTON macro:NAME[:repeat|toggle]")
+    s.set_defaults(func=cmd_macro_list)
+    msub = s.add_subparsers(dest="macro_command", metavar="action")
+    m = msub.add_parser("list", help="saved macros and the buttons that play them")
+    m.set_defaults(func=cmd_macro_list)
+    m = msub.add_parser("show", help="print a macro's steps")
+    m.add_argument("name")
+    m.set_defaults(func=cmd_macro_show)
+    m = msub.add_parser("set", parents=[common], help="create or replace a macro",
+                        description="Steps: a, ctrl+c, mouse:left, +shift / -shift (press / release only), "
+                                    "150ms (wait). Example: o2ctl macro set paste-enter ctrl+v 50ms enter")
+    m.add_argument("name")
+    m.add_argument("sequence", nargs="+", help="steps, e.g. ctrl+c 100ms ctrl+v")
+    m.add_argument("-d", "--delay", type=int, default=M.DEFAULT_DELAY, metavar="MS",
+                   help=f"wait between steps (default {M.DEFAULT_DELAY} ms)")
+    m.set_defaults(func=cmd_macro_set)
+    m = msub.add_parser("delete", parents=[common], help="delete a macro; its buttons go back to default")
+    m.add_argument("name")
+    m.set_defaults(func=cmd_macro_delete)
 
     s = sub.add_parser("reset", parents=[common], help="restore a profile to factory settings")
     s.set_defaults(func=cmd_reset)
@@ -311,7 +415,7 @@ def build_parser():
     s.set_defaults(func=cmd_listen)
 
     s = sub.add_parser("gui", help="open the settings window")
-    s.add_argument("--page", choices=["performance", "lighting", "buttons"], help="tab to open on")
+    s.add_argument("--page", choices=["performance", "lighting", "buttons", "macros"], help="tab to open on")
     s.set_defaults(func=cmd_gui)
     return p
 

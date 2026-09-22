@@ -31,6 +31,7 @@ CMD_PROFILE = 0x01
 CMD_LIGHTING = 0x02
 CMD_BUTTONS = 0x03
 CMD_PERFORMANCE = 0x04
+CMD_MACRO = 0x05
 
 PROFILE_COUNT = 3
 DPI_MIN = 100
@@ -171,6 +172,23 @@ KEYS.update({
 KEYS.update({f"f{n}": 57 + n for n in range(1, 13)})
 KEYS.update({f"f{n}": 91 + n for n in range(13, 25)})
 KEY_NAMES = {code: name for name, code in KEYS.items()}
+# Macros press modifiers as keys of their own.
+MACRO_KEYS = dict(KEYS, ctrl=224, shift=225, alt=226, super=227, rctrl=228, rshift=229, ralt=230, rsuper=231)
+
+# Macros live outside the profiles: each has an id, and a button in any
+# profile can play it. The binding slot is [0x1F + id, mode, 0, 0], so ids
+# stop short of 0x66 (DPI actions).
+MAX_MACROS = 16
+MACRO_MAX_STEPS = 85  # CORE builds each macro in a 256-byte buffer, 3 bytes a step
+MACRO_DELAY_MAX = 0x7FFF  # ms; 15 bits, the top bit marks a press
+MACRO_MODES = {"once": 0x01, "repeat": 0xE0, "toggle": 0xE1}
+MACRO_MODE_LABELS = {
+    "once": "Play once",
+    "repeat": "Repeat while held",
+    "toggle": "Repeat until pressed again",
+}
+# Mouse buttons a macro can press, as the mouse numbers them in macro steps.
+MACRO_BUTTONS = {"left": 0xB7, "right": 0xB8, "middle": 0xB9, "back": 0xBA, "forward": 0xBB}
 
 DEFAULT_BINDINGS = {
     "left": {"type": "mouse", "action": "left-click"},
@@ -373,6 +391,14 @@ def binding_slot(binding):
             raise ProtocolError(f"unknown media action: {action}")
         usage = MEDIA_ACTIONS[action]
         return bytes([3, usage & 0xFF, usage >> 8, 0])
+    if kind == "macro":
+        macro_id = binding.get("macro")
+        if not isinstance(macro_id, int) or not 1 <= macro_id <= MAX_MACROS:
+            raise ProtocolError(f"macro id must be 1-{MAX_MACROS}")
+        mode = binding.get("mode", "once")
+        if mode not in MACRO_MODES:
+            raise ProtocolError(f"unknown macro mode: {mode}")
+        return bytes([0x1F + macro_id, MACRO_MODES[mode], 0, 0])
     raise ProtocolError(f"unknown binding type: {kind}")
 
 
@@ -398,6 +424,57 @@ def buttons_packets(profile, bindings, transport):
     for index, (start, end) in enumerate(((0, 12), (12, 24))):
         p = _packet(REPORT_ID, CMD_BUTTONS, ROUTE[DONGLE], index, profile)
         p[5 : 5 + end - start] = d[start:end]
+        packets.append(p)
+    return packets
+
+
+def macro_step_code(key):
+    """A macro step's key name ('a', 'ctrl', 'mouse:left') -> its code."""
+    name = str(key).lower()
+    if name.startswith("mouse:"):
+        code = MACRO_BUTTONS.get(name[6:])
+    else:
+        code = MACRO_KEYS.get(name)
+    if code is None:
+        raise ProtocolError(f"unknown key in macro: {key}")
+    return code
+
+
+def macro_block(steps):
+    """Macro steps -> 3 bytes each: [press << 7 | delay >> 8, delay & 0xFF, code].
+
+    A step is {"key": name, "down": bool, "delay": ms}; the delay is the
+    wait after the step, before the next one.
+    """
+    if not steps:
+        raise ProtocolError("a macro needs at least one step")
+    if len(steps) > MACRO_MAX_STEPS:
+        raise ProtocolError(f"a macro holds at most {MACRO_MAX_STEPS} steps, got {len(steps)}")
+    d = bytearray()
+    for step in steps:
+        delay = int(step.get("delay", 1))
+        if not 1 <= delay <= MACRO_DELAY_MAX:
+            raise ProtocolError(f"macro delays must be 1-{MACRO_DELAY_MAX} ms, got {delay}")
+        flag = 0x80 if step["down"] else 0
+        d += bytes([flag | delay >> 8, delay & 0xFF, macro_step_code(step["key"])])
+    return d
+
+
+def macro_packets(macro_id, steps, transport):
+    """Store macro `macro_id` (1-based) on the mouse. Macros aren't per profile."""
+    _check_transport(transport)
+    if not 1 <= macro_id <= MAX_MACROS:
+        raise ProtocolError(f"macro id must be 1-{MAX_MACROS}")
+    d = macro_block(steps)
+    # Dongle: 3 steps per packet from byte 7. Cable: 18 steps per packet from byte 8.
+    per, at = (18, 8) if transport == WIRED else (3, 7)
+    count = len(steps)
+    chunks = -(-count // per)
+    packets = []
+    for index in range(chunks):
+        p = _packet(REPORT_ID, CMD_MACRO, ROUTE[transport], macro_id - 1, index, chunks, count)
+        part = d[index * per * 3 : (index + 1) * per * 3]
+        p[at : at + len(part)] = part
         packets.append(p)
     return packets
 

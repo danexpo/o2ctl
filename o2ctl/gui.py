@@ -12,6 +12,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import __version__, bindings, config  # noqa: E402
+from . import macros as M  # noqa: E402
 from . import battery as B  # noqa: E402
 from . import device as D  # noqa: E402
 from . import protocol as P  # noqa: E402
@@ -73,13 +74,13 @@ class Window(Adw.ApplicationWindow):
         self.loading = False
         self.writer = Writer(self.show_error)
         self.closing = False
-        self.unsent = set()  # (profile, block) changed while the mouse was away
+        self.unsent = set()  # (profile, block) or ("macro", id) changed while the mouse was away
 
         self.stack = Adw.ViewStack()
         self.toasts = Adw.ToastOverlay(child=self.stack)
         self.banner = Adw.Banner(revealed=False)
 
-        header = Adw.HeaderBar(title_widget=Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE))
+        header = Adw.HeaderBar(title_widget=Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.NARROW))
         self.profile_dropdown = Gtk.DropDown.new_from_strings([f"Profile {n}" for n in range(1, P.PROFILE_COUNT + 1)])
         self.profile_dropdown.set_tooltip_text("Onboard profile being edited and used")
         self.profile_dropdown.connect("notify::selected", self.on_profile_selected)
@@ -94,6 +95,7 @@ class Window(Adw.ApplicationWindow):
         self.stack.add_titled_with_icon(self.build_performance(), "performance", "Performance", "input-mouse-symbolic")
         self.stack.add_titled_with_icon(self.build_lighting(), "lighting", "Lighting", "display-brightness-symbolic")
         self.stack.add_titled_with_icon(self.build_buttons(), "buttons", "Buttons", "input-keyboard-symbolic")
+        self.stack.add_titled_with_icon(self.build_macros(), "macros", "Macros", "media-record-symbolic")
 
         self.load_profile()
         self.refresh_connection()
@@ -117,14 +119,30 @@ class Window(Adw.ApplicationWindow):
             return
         config.save(self.state)
         self.send(self.number, block)
+        if block == "buttons":
+            self.rebuild_macros()  # "used by" lines
 
     def send(self, number, block):
+        if number == "macro":
+            self.send_macro(block)
+            return
         dev = self.device
         if dev is None:
             self.unsent.add((number, block))
             return
         snapshot = {block: _copy(config.profile(self.state, number)[block])}
         self.writer.submit((number, block), lambda: getattr(dev, f"write_{block}")(number, snapshot))
+
+    def send_macro(self, macro_id):
+        macro = M.by_id(self.state, macro_id)
+        if macro is None:
+            return
+        dev = self.device
+        if dev is None:
+            self.unsent.add(("macro", macro_id))
+            return
+        snapshot = _copy(macro)
+        self.writer.submit(("macro", macro_id), lambda: dev.write_macro(snapshot))
 
     def show_error(self, message):
         self.toasts.add_toast(Adw.Toast(title=message.splitlines()[0], timeout=6))
@@ -134,7 +152,7 @@ class Window(Adw.ApplicationWindow):
 
     def build_menu(self):
         menu = Gio.Menu()
-        menu.append("Write all profiles to mouse", "win.apply-all")
+        menu.append("Write all profiles and macros to mouse", "win.apply-all")
         menu.append("Reset this profile to defaults", "win.reset")
         menu.append("About", "win.about")
         for name, handler in (("apply-all", self.on_apply_all), ("reset", self.on_reset), ("about", self.on_about)):
@@ -151,10 +169,12 @@ class Window(Adw.ApplicationWindow):
         state = _copy(self.state)
 
         def job():
+            for macro in state["macros"]:
+                dev.write_macro(macro)
             for n in range(1, P.PROFILE_COUNT + 1):
                 dev.write_profile(n, config.profile(state, n))
             dev.activate_profile(state["active_profile"])
-            GLib.idle_add(self.show_error, "All three profiles written to the mouse.")
+            GLib.idle_add(self.show_error, "All profiles and macros written to the mouse.")
 
         self.writer.submit("all", job)
 
@@ -413,8 +433,10 @@ class Window(Adw.ApplicationWindow):
         self.choices.append(("dpi-shift", None))
         self.choices += [("media", a) for a in P.MEDIA_ACTIONS]
         self.choices.append(("key", None))
+        self.choices.append(("macro", None))
         labels = [P.MOUSE_ACTION_LABELS[a] for a in P.MOUSE_ACTIONS] + ["DPI shift (hold)…"]
-        labels += [P.MEDIA_ACTION_LABELS[a] for a in P.MEDIA_ACTIONS] + ["Keystroke…"]
+        labels += [P.MEDIA_ACTION_LABELS[a] for a in P.MEDIA_ACTIONS] + ["Keystroke…", "Macro…"]
+        self.mode_names = list(P.MACRO_MODES)
 
         self.button_rows = {}
         for button in P.BUTTONS:
@@ -425,20 +447,47 @@ class Window(Adw.ApplicationWindow):
             shift = Adw.SpinRow.new_with_range(P.DPI_MIN, P.DPI_MAX, P.DPI_STEP)
             shift.set_title("DPI while held")
             shift.set_visible(False)
+            macro = Adw.ComboRow(title="Macro", model=Gtk.StringList(), visible=False)
+            mode = Adw.ComboRow(title="Plays", visible=False,
+                                model=Gtk.StringList.new([P.MACRO_MODE_LABELS[m] for m in self.mode_names]))
             combo.connect("notify::selected", self.on_binding_choice, button)
             keys.connect("apply", self.on_binding_keys, button)
             shift.connect("notify::value", self.on_binding_shift, button)
-            for row in (combo, keys, shift):
+            macro.connect("notify::selected", self.on_binding_macro, button)
+            mode.connect("notify::selected", self.on_binding_macro, button)
+            for row in (combo, keys, shift, macro, mode):
                 group.add(row)
-            self.button_rows[button] = (combo, keys, shift)
+            self.button_rows[button] = (combo, keys, shift, macro, mode)
         page.add(group)
         return page
 
+    def refresh_macro_choices(self):
+        """Refill every button's macro list after macros are added or removed."""
+        names = [m["name"] for m in self.state["macros"]]
+
+        def fill():
+            for button in P.BUTTONS:
+                macro = self.button_rows[button][3]
+                macro.set_model(Gtk.StringList.new(names))
+                self.show_binding(button)
+        self.with_loading(fill)
+
+    def show_macro_rows(self, button, visible):
+        _, _, _, macro, mode = self.button_rows[button]
+        macro.set_visible(visible)
+        mode.set_visible(visible)
+
     def show_binding(self, button):
-        combo, keys, shift = self.button_rows[button]
+        combo, keys, shift, macro, mode = self.button_rows[button]
         binding = self.prof["buttons"][button]
         kind = binding["type"]
-        if kind == "mouse" and binding["action"] == "dpi-shift":
+        if kind == "macro":
+            choice = ("macro", None)
+            ids = [m["id"] for m in self.state["macros"]]
+            if binding["macro"] in ids:
+                macro.set_selected(ids.index(binding["macro"]))
+            mode.set_selected(self.mode_names.index(binding.get("mode", "once")))
+        elif kind == "mouse" and binding["action"] == "dpi-shift":
             choice = ("dpi-shift", None)
             shift.set_value(binding.get("dpi", 400))
         elif kind == "key":
@@ -449,17 +498,25 @@ class Window(Adw.ApplicationWindow):
         combo.set_selected(self.choices.index(choice) if choice in self.choices else 0)
         keys.set_visible(choice[0] == "key")
         shift.set_visible(choice[0] == "dpi-shift")
+        self.show_macro_rows(button, choice[0] == "macro")
 
     def on_binding_choice(self, combo, _pspec, button):
         kind, action = self.choices[combo.get_selected()]
-        _, keys, shift = self.button_rows[button]
+        _, keys, shift, macro, mode = self.button_rows[button]
         keys.set_visible(kind == "key")
         shift.set_visible(kind == "dpi-shift")
+        self.show_macro_rows(button, kind == "macro")
         if self.loading:
             return
         if kind == "key":
             keys.grab_focus()
             return  # written once a combination is applied
+        if kind == "macro":
+            if not self.state["macros"]:
+                self.show_error("No macros yet. Make one on the Macros page first.")
+                return
+            self.on_binding_macro(macro, None, button)
+            return
         if kind == "dpi-shift":
             binding = {"type": "mouse", "action": "dpi-shift", "dpi": int(shift.get_value())}
         else:
@@ -478,12 +535,121 @@ class Window(Adw.ApplicationWindow):
         self.prof["buttons"][button] = binding
         self.changed("buttons")
 
+    def on_binding_macro(self, _row, _pspec, button):
+        if self.loading or not self.state["macros"]:
+            return
+        _, _, _, macro, mode = self.button_rows[button]
+        chosen = self.state["macros"][min(macro.get_selected(), len(self.state["macros"]) - 1)]
+        self.prof["buttons"][button] = {"type": "macro", "macro": chosen["id"],
+                                        "mode": self.mode_names[mode.get_selected()]}
+        self.send_macro(chosen["id"])  # in case the mouse lost it (factory reset)
+        self.changed("buttons")
+
     def on_binding_shift(self, row, _pspec, button):
         if self.loading:
             return
         dpi = int(round(row.get_value() / P.DPI_STEP) * P.DPI_STEP)
         self.prof["buttons"][button] = {"type": "mouse", "action": "dpi-shift", "dpi": dpi}
         self.changed("buttons")
+
+    # ----- macros page ----------------------------------------------------
+
+    def build_macros(self):
+        page = Adw.PreferencesPage()
+        self.macro_group = Adw.PreferencesGroup(
+            title="Macros",
+            description="Saved on the mouse, shared by all profiles. Bind one on the Buttons page.")
+        self.macro_rows = []
+        page.add(self.macro_group)
+
+        new = Adw.PreferencesGroup(
+            title="New macro",
+            description="Steps are separated by spaces: a key (a, f5, enter), a combination (ctrl+c), "
+                        "mouse:left, +shift or -shift to only press or release a key, and 150ms to wait. "
+                        f"Steps are {M.DEFAULT_DELAY} ms apart unless a wait says otherwise.")
+        self.new_macro_name = Adw.EntryRow(title="Name")
+        self.new_macro_steps = Adw.EntryRow(title="Steps, e.g. ctrl+c 100ms ctrl+v", show_apply_button=True)
+        self.new_macro_steps.connect("apply", self.on_macro_add)
+        new.add(self.new_macro_name)
+        new.add(self.new_macro_steps)
+        page.add(new)
+        self.rebuild_macros()
+        return page
+
+    def rebuild_macros(self):
+        for row in self.macro_rows:
+            self.macro_group.remove(row)
+        self.macro_rows = []
+        for macro in self.state["macros"]:
+            used = M.users(self.state, macro["id"])
+            where = ", ".join(f"profile {n} {P.BUTTON_LABELS[b].split(' (')[0].lower()}" for n, b in used)
+            row = Adw.ExpanderRow(title=macro["name"], subtitle=where or "Not bound to a button",
+                                  use_markup=False)
+            steps = Adw.EntryRow(title="Steps", text=M.format(macro["steps"]), show_apply_button=True)
+            steps.connect("apply", self.on_macro_steps, macro["id"])
+            delete = Adw.ActionRow(title="Delete macro",
+                                   subtitle="Buttons that play it go back to their default action")
+            button = Gtk.Button(label="Delete", valign=Gtk.Align.CENTER)
+            button.add_css_class("destructive-action")
+            button.connect("clicked", self.on_macro_delete, macro["id"])
+            delete.add_suffix(button)
+            row.add_row(steps)
+            row.add_row(delete)
+            self.macro_rows.append(row)
+        if not self.macro_rows:
+            self.macro_rows.append(Adw.ActionRow(title="No macros yet", subtitle="Add one below"))
+        for row in self.macro_rows:
+            self.macro_group.add(row)
+
+    def on_macro_add(self, entry):
+        try:
+            name = M.check_name(self.new_macro_name.get_text())
+            if M.find(self.state, name):
+                raise P.ProtocolError("There is already a macro with that name.")
+            macro = M.put(self.state, name, M.parse(entry.get_text()))
+        except P.ProtocolError as e:
+            entry.add_css_class("error")
+            self.show_error(str(e))
+            return
+        entry.remove_css_class("error")
+        entry.set_text("")
+        self.new_macro_name.set_text("")
+        config.save(self.state)
+        self.send_macro(macro["id"])
+        self.rebuild_macros()
+        self.refresh_macro_choices()
+
+    def on_macro_steps(self, entry, macro_id):
+        macro = M.by_id(self.state, macro_id)
+        try:
+            macro["steps"] = M.parse(entry.get_text())
+        except P.ProtocolError as e:
+            entry.add_css_class("error")
+            self.show_error(str(e))
+            return
+        entry.remove_css_class("error")
+        config.save(self.state)
+        self.send_macro(macro_id)
+
+    def on_macro_delete(self, _button, macro_id):
+        macro = M.by_id(self.state, macro_id)
+        dialog = Adw.AlertDialog(heading=f"Delete macro {macro['name']}?",
+                                 body="Buttons that play it go back to their default action.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def done(_d, response):
+            if response != "delete" or M.by_id(self.state, macro_id) is None:
+                return
+            for number in M.delete(self.state, macro):
+                self.send(number, "buttons")
+            config.save(self.state)
+            self.rebuild_macros()
+            self.refresh_macro_choices()
+
+        dialog.connect("response", done)
+        dialog.present(self)
 
     # ----- loading -----------------------------------------------------------
 
@@ -509,9 +675,8 @@ class Window(Adw.ApplicationWindow):
             self.speed_scale.set_value(light["speed"])
             for button, color in zip(self.color_buttons, light["colors"]):
                 button.set_rgba(rgba(color))
-            for button in P.BUTTONS:
-                self.show_binding(button)
         self.with_loading(fill)
+        self.refresh_macro_choices()  # also shows the button bindings
 
     def on_profile_selected(self, dropdown, _pspec):
         if self.loading:
