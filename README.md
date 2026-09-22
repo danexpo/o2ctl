@@ -1,0 +1,91 @@
+# o2ctl
+
+Settings for the **Glorious Model O 2 Wireless** on Linux, with a GTK 4 /
+libadwaita window and a CLI. It was built for Omarchy but works on any
+distro. It covers what Glorious CORE does for this mouse, apart from macros
+and firmware updates:
+
+- DPI stages: 1–6 stages, 100–26000 in steps of 50, with an indicator colour each
+  and the stage the mouse starts on
+- Polling rate (125/250/500/1000 Hz), lift-off distance (1/2 mm), debounce (0–16 ms), motion sync
+- Lighting: all 9 onboard effects, with brightness, speed and colours
+- Button remapping: mouse functions, DPI up/down/cycle/shift, profile cycling,
+  media keys, keystrokes with modifiers, or disabled
+- The three onboard profiles
+- Battery level. The dongle reports it about once a minute.
+
+Connections: the 2.4 GHz dongle (`093a:822d`, tested) and the USB cable
+(`093a:822a`, built from the same protocol code but not tried on hardware
+yet). Bluetooth isn't supported: switch the mouse to 2.4 GHz or plug it in.
+
+## Install
+
+```sh
+./install.sh
+```
+
+This puts `o2ctl` in `~/.local/bin` and adds a **Model O 2 Settings** entry
+to the app launcher (Super + Space on Omarchy). You need system
+`python-gobject` and `libadwaita`, which Omarchy already ships.
+
+Access without root needs a udev rule. The installer prints the two sudo
+commands if the rule is missing or out of date:
+
+```sh
+sudo install -m644 data/70-glorious-model-o2.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=hidraw
+```
+
+## Use
+
+Open **Model O 2 Settings**. Changes go to the mouse about 0.3 s after you
+stop adjusting, and the mouse keeps them in its onboard memory. The profile
+picker in the header selects the profile you edit and makes it the active one.
+
+```sh
+o2ctl status                           # connection, battery, current profile
+o2ctl dpi 400 800 1600 3200 -s 3       # stages; start on the 3rd
+o2ctl dpi -c '#ff0' '#00f' '#f00' '#0f0'   # indicator colours
+o2ctl polling 1000
+o2ctl lod 2
+o2ctl debounce 4
+o2ctl motion-sync on
+o2ctl lighting breathing -b 80 -s 40 -c '#ff0000' '#0000ff'
+o2ctl lighting single-color -c '#00ff00'
+o2ctl bind forward media:volume-up
+o2ctl bind back key:ctrl+c
+o2ctl bind dpi dpi-shift:400           # sniper button
+o2ctl bind forward default
+o2ctl profile 2                        # switch the onboard profile
+o2ctl -p 3 dpi 800 1600 ...            # edit a profile without switching to it
+o2ctl apply --all                      # push everything saved to the mouse
+o2ctl battery --wait 90
+o2ctl gui --page lighting
+```
+
+Run `o2ctl <command> -h` for details. `o2ctl bind -h` lists every action.
+
+## How the settings are kept
+
+The mouse can't report its settings: the dongle ignores feature-report
+reads, and Glorious CORE doesn't read them either. So
+`~/.config/o2ctl/config.json` is the source of truth. The first time you open
+the tool it shows factory defaults, not what is on the mouse. Run
+`o2ctl apply --all` (or use *Write all profiles to mouse* in the menu) to make
+the mouse match.
+
+Lighting changes made with the mouse's own button combos don't show up here.
+A factory reset of the mouse (hold left + right + wheel click for 5 s) wipes
+its profiles; `o2ctl apply --all` restores them.
+
+## Development
+
+```sh
+/usr/bin/python3 -m unittest discover -s tests
+```
+
+`o2ctl/protocol.py` builds the packets and has no I/O. The tests check its
+output against byte layouts taken from Glorious CORE, plus one packet
+confirmed on a real mouse. `docs/PROTOCOL.md` describes the wire format.
+
+Not affiliated with Glorious.

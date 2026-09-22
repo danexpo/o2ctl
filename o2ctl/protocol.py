@@ -1,0 +1,425 @@
+"""Packet builders for the Glorious Model O 2 Wireless vendor protocol.
+
+Everything here is pure: settings in, 64-byte HID feature reports out. The
+layouts come from Glorious CORE 2.1.21 (MouseV2DeviceHandler and the
+Prepare*Buffers2 helpers in its main-process bundle). The dongle layout has
+been checked against real hardware; the wired layout is taken from the same
+code but has not been tried on a mouse yet.
+
+Every packet is feature report 3: [0x03, command, route, ...]. The route
+byte is 0xFB through the 2.4 GHz dongle and 0xFA over the USB cable. The
+dongle carries small payloads, so larger blocks are split into numbered
+chunks.
+"""
+
+import struct
+
+VID = 0x093A
+PID_WIRED = 0x822A
+PID_BLUETOOTH = 0x822B
+PID_DONGLE = 0x822D
+
+WIRED = "wired"
+DONGLE = "dongle"
+TRANSPORTS = (WIRED, DONGLE)
+
+REPORT_ID = 0x03
+PACKET_SIZE = 64
+ROUTE = {DONGLE: 0xFB, WIRED: 0xFA}
+
+CMD_PROFILE = 0x01
+CMD_LIGHTING = 0x02
+CMD_BUTTONS = 0x03
+CMD_PERFORMANCE = 0x04
+
+PROFILE_COUNT = 3
+DPI_MIN = 100
+DPI_MAX = 26000
+DPI_STEP = 50
+MAX_DPI_STAGES = 6
+MAX_COLORS = 6
+DEBOUNCE_MAX = 16
+
+POLLING_RATES = {125: 1, 250: 2, 500: 3, 1000: 4}
+LIFT_OFF = (1, 2)
+
+# name -> (hardware effect id, how many colours the effect uses)
+EFFECTS = {
+    "off": (0, 0),
+    "glorious": (1, 0),
+    "seamless-breathing": (2, 0),
+    "breathing": (3, MAX_COLORS),
+    "single-color": (4, 1),
+    "breathing-single": (5, 1),
+    "tail": (6, 0),
+    "rave": (7, 2),
+    "wave": (8, 0),
+}
+EFFECT_LABELS = {
+    "off": "Off",
+    "glorious": "Glorious Mode",
+    "seamless-breathing": "Seamless Breathing",
+    "breathing": "Breathing (RGB)",
+    "single-color": "Single Color",
+    "breathing-single": "Breathing (Single Color)",
+    "tail": "Tail",
+    "rave": "Rave",
+    "wave": "Wave",
+}
+# Effects whose speed setting does anything.
+ANIMATED = {"glorious", "seamless-breathing", "breathing", "breathing-single", "tail", "rave", "wave"}
+
+# Physical button -> slot in the binding table.
+BUTTONS = ("left", "right", "middle", "back", "forward", "dpi")
+BUTTON_SLOT = {"left": 0, "right": 1, "middle": 2, "back": 3, "forward": 4, "dpi": 5}
+BUTTON_LABELS = {
+    "left": "Left button",
+    "right": "Right button",
+    "middle": "Wheel click",
+    "back": "Back (rear side button)",
+    "forward": "Forward (front side button)",
+    "dpi": "DPI button",
+}
+
+# Action name -> 4-byte slot value, for actions that take no parameter.
+MOUSE_ACTIONS = {
+    "left-click": (1, 1),
+    "right-click": (1, 2),
+    "middle-click": (1, 3),
+    "back": (1, 4),
+    "forward": (1, 5),
+    "scroll-up": (1, 160),
+    "scroll-down": (1, 161),
+    "profile-cycle-up": (1, 176),
+    "profile-cycle-down": (1, 177),
+    "dpi-stage-up": (102, 1),
+    "dpi-stage-down": (102, 2),
+    "dpi-cycle-up": (102, 3),
+    "dpi-cycle-down": (102, 4),
+    "battery-check": (119, 0),
+    "disabled": (0, 0),
+}
+MOUSE_ACTION_LABELS = {
+    "left-click": "Left click",
+    "right-click": "Right click",
+    "middle-click": "Middle click",
+    "back": "Back",
+    "forward": "Forward",
+    "scroll-up": "Scroll up",
+    "scroll-down": "Scroll down",
+    "profile-cycle-up": "Next profile",
+    "profile-cycle-down": "Previous profile",
+    "dpi-stage-up": "DPI up",
+    "dpi-stage-down": "DPI down",
+    "dpi-cycle-up": "DPI cycle",
+    "dpi-cycle-down": "DPI cycle (reverse)",
+    "battery-check": "Show battery level",
+    "disabled": "Disabled",
+}
+
+# Consumer-page usages, sent as [3, low, high, 0].
+MEDIA_ACTIONS = {
+    "play-pause": 0x00CD,
+    "stop": 0x00B7,
+    "next-track": 0x00B5,
+    "previous-track": 0x00B6,
+    "mute": 0x00E2,
+    "volume-up": 0x00E9,
+    "volume-down": 0x00EA,
+    "media-player": 0x0183,
+    "email": 0x018A,
+    "calculator": 0x0192,
+    "browser-home": 0x0223,
+    "browser-back": 0x0224,
+    "browser-forward": 0x0225,
+    "browser-refresh": 0x0227,
+    "browser-search": 0x0221,
+}
+MEDIA_ACTION_LABELS = {
+    "play-pause": "Play / pause",
+    "stop": "Stop",
+    "next-track": "Next track",
+    "previous-track": "Previous track",
+    "mute": "Mute",
+    "volume-up": "Volume up",
+    "volume-down": "Volume down",
+    "media-player": "Open media player",
+    "email": "Open email",
+    "calculator": "Open calculator",
+    "browser-home": "Browser home",
+    "browser-back": "Browser back",
+    "browser-forward": "Browser forward",
+    "browser-refresh": "Browser refresh",
+    "browser-search": "Browser search",
+}
+
+MODIFIER_BITS = {"ctrl": 1, "shift": 2, "alt": 4, "super": 8}
+
+# Keyboard-page usages for keystroke bindings.
+KEYS = {chr(ord("a") + i): 4 + i for i in range(26)}
+KEYS.update({str(n): 29 + n for n in range(1, 10)})
+KEYS["0"] = 39
+KEYS.update({
+    "enter": 40, "escape": 41, "backspace": 42, "tab": 43, "space": 44,
+    "minus": 45, "equal": 46, "bracketleft": 47, "bracketright": 48,
+    "backslash": 49, "semicolon": 51, "apostrophe": 52, "grave": 53,
+    "comma": 54, "period": 55, "slash": 56, "capslock": 57,
+    "print": 70, "scrolllock": 71, "pause": 72, "insert": 73, "home": 74,
+    "pageup": 75, "delete": 76, "end": 77, "pagedown": 78, "right": 79,
+    "left": 80, "down": 81, "up": 82, "menu": 101,
+})
+KEYS.update({f"f{n}": 57 + n for n in range(1, 13)})
+KEYS.update({f"f{n}": 91 + n for n in range(13, 25)})
+KEY_NAMES = {code: name for name, code in KEYS.items()}
+
+DEFAULT_BINDINGS = {
+    "left": {"type": "mouse", "action": "left-click"},
+    "right": {"type": "mouse", "action": "right-click"},
+    "middle": {"type": "mouse", "action": "middle-click"},
+    "back": {"type": "mouse", "action": "back"},
+    "forward": {"type": "mouse", "action": "forward"},
+    "dpi": {"type": "mouse", "action": "dpi-cycle-up"},
+}
+
+# Slot values the mouse ships with, including the two wheel slots that only
+# the wired layout carries.
+DEFAULT_SLOTS = bytes([
+    1, 1, 0, 0,
+    1, 2, 0, 0,
+    1, 3, 0, 0,
+    1, 4, 0, 0,
+    1, 5, 0, 0,
+    102, 3, 0, 0,
+    1, 160, 0, 0,
+    1, 161, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+])
+
+
+class ProtocolError(ValueError):
+    pass
+
+
+def _check_transport(transport):
+    if transport not in ROUTE:
+        raise ProtocolError(f"unsupported transport: {transport}")
+
+
+def _check_profile(profile):
+    if not 1 <= profile <= PROFILE_COUNT:
+        raise ProtocolError(f"profile must be 1-{PROFILE_COUNT}, got {profile}")
+
+
+def _packet(*head):
+    p = bytearray(PACKET_SIZE)
+    p[: len(head)] = bytes(head)
+    return p
+
+
+def parse_color(value):
+    """'#ff8000', 'ff8000', '#f80' or (r, g, b) -> (r, g, b)."""
+    if isinstance(value, (tuple, list)):
+        r, g, b = value
+        return int(r), int(g), int(b)
+    s = str(value).strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    if len(s) != 6:
+        raise ProtocolError(f"bad colour: {value!r}")
+    try:
+        return tuple(bytes.fromhex(s))
+    except ValueError:
+        raise ProtocolError(f"bad colour: {value!r}") from None
+
+
+def profile_packet(profile, transport):
+    """Make `profile` (1-3) the active onboard profile."""
+    _check_transport(transport)
+    _check_profile(profile)
+    return [_packet(REPORT_ID, CMD_PROFILE, ROUTE[transport], profile)]
+
+
+def performance_block(perf, transport):
+    """The settings block shared by every transport, before chunking."""
+    stages = perf["dpi_stages"]
+    if not 1 <= len(stages) <= MAX_DPI_STAGES:
+        raise ProtocolError(f"need 1-{MAX_DPI_STAGES} DPI stages")
+    active = perf["active_stage"]
+    if not 0 <= active < len(stages):
+        raise ProtocolError("active_stage is outside the stage list")
+    rate = perf["polling_rate"]
+    if rate not in POLLING_RATES:
+        raise ProtocolError(f"polling rate must be one of {sorted(POLLING_RATES)}")
+    lod = perf["lift_off"]
+    if lod not in LIFT_OFF:
+        raise ProtocolError("lift-off distance must be 1 or 2 mm")
+    debounce = perf["debounce"]
+    if not 0 <= debounce <= DEBOUNCE_MAX:
+        raise ProtocolError(f"debounce must be 0-{DEBOUNCE_MAX} ms")
+
+    d = bytearray(256)
+    d[0] = active
+    d[1] = len(stages)
+    d[2] = lod
+    d[3] = debounce
+    d[4] = POLLING_RATES[rate]
+    d[5] = 1 if perf["motion_sync"] else 0
+    offset, stride = (12, 8) if transport == WIRED else (6, 5)
+    for i, stage in enumerate(stages):
+        dpi = stage["dpi"]
+        if not DPI_MIN <= dpi <= DPI_MAX:
+            raise ProtocolError(f"DPI must be {DPI_MIN}-{DPI_MAX}, got {dpi}")
+        at = offset + stride * i
+        struct.pack_into("<h", d, at, round(dpi / DPI_STEP))
+        d[at + 2 : at + 5] = bytes(parse_color(stage["color"]))
+    return d
+
+
+def performance_packets(profile, perf, transport):
+    _check_transport(transport)
+    _check_profile(profile)
+    d = performance_block(perf, transport)
+    if transport == WIRED:
+        p = _packet(REPORT_ID, CMD_PERFORMANCE, ROUTE[WIRED], profile)
+        p[4:64] = d[0:60]
+        return [p]
+    packets = []
+    for index, (start, end) in enumerate(((0, 11), (11, 21), (21, 31), (31, 41))):
+        p = _packet(REPORT_ID, CMD_PERFORMANCE, ROUTE[DONGLE], index, profile)
+        p[5 : 5 + end - start] = d[start:end]
+        packets.append(p)
+    return packets
+
+
+def _speed_level(percent):
+    return percent * 20 // 100 if percent > 4 else 1
+
+
+def _brightness_level(percent):
+    if percent == 0:
+        return 0
+    return percent * 20 // 100 if percent > 4 else 1
+
+
+def lighting_block(light, transport):
+    effect = light["effect"]
+    if effect not in EFFECTS:
+        raise ProtocolError(f"unknown effect: {effect}")
+    for key in ("speed", "brightness"):
+        if not 0 <= light[key] <= 100:
+            raise ProtocolError(f"{key} must be 0-100")
+    colors = [parse_color(c) for c in light["colors"][: EFFECTS[effect][1]]]
+
+    d = bytearray(256)
+    speed = _speed_level(light["speed"])
+    brightness = _brightness_level(light["brightness"])
+    d[0] = speed
+    d[1] = brightness
+    d[2] = len(colors)
+    d[3] = speed
+    d[4] = brightness
+    offset = 11 if transport == WIRED else 5
+    for i, rgb in enumerate(colors):
+        d[offset + 3 * i : offset + 3 * i + 3] = bytes(rgb)
+    return d
+
+
+def lighting_packets(profile, light, transport):
+    _check_transport(transport)
+    _check_profile(profile)
+    d = lighting_block(light, transport)
+    effect_id = EFFECTS[light["effect"]][0]
+    if transport == WIRED:
+        p = _packet(REPORT_ID, CMD_LIGHTING, ROUTE[WIRED], profile, effect_id)
+        p[5:34] = d[0:29]
+        return [p]
+    packets = []
+    for index, (start, end) in enumerate(((0, 8), (8, 17), (17, 26))):
+        p = _packet(REPORT_ID, CMD_LIGHTING, ROUTE[DONGLE], index, profile, effect_id)
+        p[6 : 6 + end - start] = d[start:end]
+        packets.append(p)
+    return packets
+
+
+def binding_slot(binding):
+    """One binding dict -> its 4 bytes in the button table."""
+    kind = binding.get("type")
+    if kind == "mouse":
+        action = binding.get("action")
+        if action == "dpi-shift":
+            dpi = int(binding.get("dpi", 400))
+            if not DPI_MIN <= dpi <= DPI_MAX:
+                raise ProtocolError(f"DPI shift must be {DPI_MIN}-{DPI_MAX}")
+            return bytes([102, 5]) + struct.pack("<H", dpi // DPI_STEP)
+        if action not in MOUSE_ACTIONS:
+            raise ProtocolError(f"unknown mouse action: {action}")
+        a, b = MOUSE_ACTIONS[action]
+        return bytes([a, b, 0, 0])
+    if kind == "key":
+        key = binding.get("key")
+        code = key if isinstance(key, int) else KEYS.get(str(key).lower())
+        if code is None or not 0 < code < 256:
+            raise ProtocolError(f"unknown key: {key}")
+        mask = 0
+        for mod in binding.get("modifiers", []):
+            if mod not in MODIFIER_BITS:
+                raise ProtocolError(f"unknown modifier: {mod}")
+            mask |= MODIFIER_BITS[mod]
+        return bytes([2, mask, code, 0])
+    if kind == "media":
+        action = binding.get("action")
+        if action not in MEDIA_ACTIONS:
+            raise ProtocolError(f"unknown media action: {action}")
+        usage = MEDIA_ACTIONS[action]
+        return bytes([3, usage & 0xFF, usage >> 8, 0])
+    raise ProtocolError(f"unknown binding type: {kind}")
+
+
+def buttons_block(bindings):
+    d = bytearray(DEFAULT_SLOTS)
+    for button, binding in bindings.items():
+        if button not in BUTTON_SLOT:
+            raise ProtocolError(f"unknown button: {button}")
+        at = BUTTON_SLOT[button] * 4
+        d[at : at + 4] = binding_slot(binding)
+    return d
+
+
+def buttons_packets(profile, bindings, transport):
+    _check_transport(transport)
+    _check_profile(profile)
+    d = buttons_block(bindings)
+    if transport == WIRED:
+        p = _packet(REPORT_ID, CMD_BUTTONS, ROUTE[WIRED], profile)
+        p[8:44] = d[0:36]
+        return [p]
+    packets = []
+    for index, (start, end) in enumerate(((0, 12), (12, 24))):
+        p = _packet(REPORT_ID, CMD_BUTTONS, ROUTE[DONGLE], index, profile)
+        p[5 : 5 + end - start] = d[start:end]
+        packets.append(p)
+    return packets
+
+
+def parse_event(report):
+    """Decode an input report from the vendor interface, or return None.
+
+    Report 6 carries status: 0xFB is a battery update (the dongle sends one
+    about once a minute), 0xF6 means the mouse switched profile by itself
+    (index 0-2). Report 4 with 0xF1 is the wired profile change (1-3). The
+    mouse sends nothing when the host switches profile.
+    """
+    if len(report) < 3:
+        return None
+    rid, kind = report[0], report[1]
+    if rid == 6 and kind == 0xFB and len(report) >= 4:
+        level = report[2]
+        if level > 100:
+            return None
+        return {"event": "battery", "level": level, "charging": report[3] != 0}
+    if rid == 6 and kind == 0xF6 and report[2] < PROFILE_COUNT:
+        return {"event": "profile", "profile": report[2] + 1}
+    if rid == 4 and kind == 0xF1 and 1 <= report[2] <= PROFILE_COUNT:
+        return {"event": "profile", "profile": report[2]}
+    return None

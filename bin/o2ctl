@@ -1,0 +1,10 @@
+#!/usr/bin/python3
+# System Python on purpose: the GUI needs the distro's PyGObject (python-gobject).
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from o2ctl.cli import main  # noqa: E402
+
+sys.exit(main())

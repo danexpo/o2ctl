@@ -1,0 +1,321 @@
+import contextlib
+import os
+import sys
+import tempfile
+import unittest
+import unittest.mock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from o2ctl import bindings, config  # noqa: E402
+from o2ctl import device as D  # noqa: E402
+from o2ctl import protocol as P  # noqa: E402
+
+
+def hexpad(text):
+    """'03 02 fb' -> 64-byte packet with the rest zeroed."""
+    raw = bytes.fromhex(text)
+    return raw + bytes(P.PACKET_SIZE - len(raw))
+
+
+class LightingTest(unittest.TestCase):
+    def test_single_color_matches_hardware_verified_packet(self):
+        # Sent to a real Model O 2 Wireless through the dongle; it turned solid green.
+        light = {"effect": "single-color", "speed": 60, "brightness": 100, "colors": ["#00ff00"]}
+        packets = P.lighting_packets(1, light, P.DONGLE)
+        self.assertEqual(packets[0], hexpad("03 02 fb 00 01 04 0c 14 01 0c 14 00 ff 00"))
+        self.assertEqual(packets[1], hexpad("03 02 fb 01 01 04"))
+        self.assertEqual(packets[2], hexpad("03 02 fb 02 01 04"))
+
+    def test_colours_spill_into_later_dongle_chunks(self):
+        colors = ["#010203", "#040506", "#070809", "#0a0b0c", "#0d0e0f", "#101112"]
+        light = {"effect": "breathing", "speed": 100, "brightness": 50, "colors": colors}
+        p = P.lighting_packets(2, light, P.DONGLE)
+        # block: 14 0a 06 14 0a | 01 02 03 | 04 05 06 | 07 08 09 | ...
+        self.assertEqual(p[0], hexpad("03 02 fb 00 02 03 14 0a 06 14 0a 01 02 03"))
+        self.assertEqual(p[1], hexpad("03 02 fb 01 02 03 04 05 06 07 08 09 0a 0b 0c"))
+        self.assertEqual(p[2], hexpad("03 02 fb 02 02 03 0d 0e 0f 10 11 12"))
+
+    def test_effect_uses_only_its_colour_count(self):
+        light = {"effect": "glorious", "speed": 60, "brightness": 60, "colors": ["#ffffff"] * 6}
+        block = P.lighting_block(light, P.DONGLE)
+        self.assertEqual(block[2], 0)
+        self.assertEqual(bytes(block[5:8]), bytes(3))
+
+    def test_wired_layout(self):
+        light = {"effect": "single-color", "speed": 60, "brightness": 100, "colors": ["#00ff00"]}
+        (p,) = P.lighting_packets(3, light, P.WIRED)
+        # Colours start at block offset 11 over the cable (packet byte 16).
+        self.assertEqual(p, hexpad("03 02 fa 03 04 0c 14 01 0c 14 00 00 00 00 00 00 00 ff 00"))
+
+    def test_level_scaling_matches_core(self):
+        self.assertEqual(P._brightness_level(0), 0)
+        self.assertEqual(P._brightness_level(3), 1)
+        self.assertEqual(P._brightness_level(55), 11)
+        self.assertEqual(P._speed_level(0), 1)
+        self.assertEqual(P._speed_level(100), 20)
+
+    def test_colour_forms(self):
+        self.assertEqual(P.parse_color("#ff8000"), (255, 128, 0))
+        self.assertEqual(P.parse_color("f80"), (255, 136, 0))
+        self.assertEqual(P.parse_color((1, 2, 3)), (1, 2, 3))
+        for bad in ("#ff80", "zzzzzz", ""):
+            with self.assertRaises(P.ProtocolError):
+                P.parse_color(bad)
+
+    def test_off_effect(self):
+        light = {"effect": "off", "speed": 60, "brightness": 60, "colors": []}
+        self.assertEqual(P.lighting_packets(1, light, P.DONGLE)[0][5], 0)
+
+    def test_rejects_unknown_effect(self):
+        with self.assertRaises(P.ProtocolError):
+            P.lighting_packets(1, {"effect": "disco", "speed": 1, "brightness": 1, "colors": []}, P.DONGLE)
+
+
+class PerformanceTest(unittest.TestCase):
+    def perf(self):
+        return config.default_profile()["performance"]
+
+    def test_default_dongle_packets(self):
+        p = P.performance_packets(1, self.perf(), P.DONGLE)
+        self.assertEqual(len(p), 4)
+        self.assertEqual(p[0], hexpad("03 04 fb 00 01 02 04 01 02 04 00 08 00 ff ff 00"))
+        self.assertEqual(p[1], hexpad("03 04 fb 01 01 10 00 00 00 ff 20 00 ff 00 00"))
+        self.assertEqual(p[2], hexpad("03 04 fb 02 01 40 00 00 ff 00"))
+        self.assertEqual(p[3], hexpad("03 04 fb 03 01"))
+
+    def test_default_wired_packet(self):
+        (p,) = P.performance_packets(2, self.perf(), P.WIRED)
+        head = "03 04 fa 02 02 04 01 02 04 00" + " 00" * 6
+        stages = "08 00 ff ff 00 00 00 00 10 00 00 00 ff 00 00 00 20 00 ff 00 00 00 00 00 40 00 00 ff 00"
+        self.assertEqual(p, hexpad(head + " " + stages))
+
+    def test_settings_bytes(self):
+        perf = self.perf()
+        perf.update(polling_rate=500, lift_off=2, debounce=8, motion_sync=True, active_stage=0)
+        perf["dpi_stages"] = [{"dpi": 26000, "color": "#123456"}]
+        block = P.performance_block(perf, P.DONGLE)
+        self.assertEqual(bytes(block[:11]), bytes.fromhex("00 01 02 08 03 01 08 02 12 34 56"))
+
+    def test_six_stages_fit_the_dongle_chunks(self):
+        perf = self.perf()
+        perf["dpi_stages"] = [{"dpi": 100 * (i + 1), "color": "#000000"} for i in range(6)]
+        packets = P.performance_packets(1, perf, P.DONGLE)
+        # Last stage (600 DPI = 12) lands at block offset 31, i.e. chunk 3 byte 0.
+        self.assertEqual(packets[3][5:7], bytes([12, 0]))
+
+    def test_validation(self):
+        for key, value in [("polling_rate", 2000), ("lift_off", 3), ("debounce", 17), ("active_stage", 9)]:
+            perf = self.perf()
+            perf[key] = value
+            with self.assertRaises(P.ProtocolError, msg=key):
+                P.performance_block(perf, P.DONGLE)
+        perf = self.perf()
+        perf["dpi_stages"][0]["dpi"] = 50
+        with self.assertRaises(P.ProtocolError):
+            P.performance_block(perf, P.DONGLE)
+        perf["dpi_stages"] = [{"dpi": 800, "color": "#000000"}] * 7
+        with self.assertRaises(P.ProtocolError):
+            P.performance_block(perf, P.DONGLE)
+
+
+class ButtonsTest(unittest.TestCase):
+    def test_default_dongle_packets(self):
+        p = P.buttons_packets(1, P.DEFAULT_BINDINGS, P.DONGLE)
+        self.assertEqual(p[0], hexpad("03 03 fb 00 01 01 01 00 00 01 02 00 00 01 03 00 00"))
+        self.assertEqual(p[1], hexpad("03 03 fb 01 01 01 04 00 00 01 05 00 00 66 03 00 00"))
+
+    def test_default_wired_packet_keeps_wheel_slots(self):
+        (p,) = P.buttons_packets(1, P.DEFAULT_BINDINGS, P.WIRED)
+        self.assertEqual(p[:8], bytes.fromhex("03 03 fa 01 00 00 00 00"))
+        self.assertEqual(p[8:44], P.DEFAULT_SLOTS[:36])
+        self.assertEqual(p[32:36], bytes([1, 160, 0, 0]))
+
+    def test_slot_encodings(self):
+        cases = {
+            "key:ctrl+c": "02 01 06 00",
+            "key:ctrl+shift+alt+super+f5": "02 0f 3e 00",
+            "media:play-pause": "03 cd 00 00",
+            "media:media-player": "03 83 01 00",
+            "dpi-shift:400": "66 05 08 00",
+            "dpi-shift:26000": "66 05 08 02",
+            "dpi-cycle-up": "66 03 00 00",
+            "profile-cycle-up": "01 b0 00 00",
+            "battery-check": "77 00 00 00",
+            "disabled": "00 00 00 00",
+            "key:f13": "02 00 68 00",
+            "key:0": "02 00 27 00",
+            "key:1": "02 00 1e 00",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(P.binding_slot(bindings.parse(text)), bytes.fromhex(expected), text)
+
+    def test_remap_lands_in_the_right_slot(self):
+        b = dict(P.DEFAULT_BINDINGS, back=bindings.parse("media:volume-down"))
+        p = P.buttons_packets(1, b, P.DONGLE)
+        self.assertEqual(p[1][5:9], bytes.fromhex("03 ea 00 00"))
+
+    def test_bad_bindings(self):
+        for text in ("key:ctrl+", "key:hyper+a", "media:party", "fly", "dpi-shift:9"):
+            with self.assertRaises(P.ProtocolError, msg=text):
+                bindings.parse(text)
+
+
+class ProfileAndEventsTest(unittest.TestCase):
+    def test_profile_packet(self):
+        self.assertEqual(P.profile_packet(2, P.DONGLE), [hexpad("03 01 fb 02")])
+        self.assertEqual(P.profile_packet(3, P.WIRED), [hexpad("03 01 fa 03")])
+        with self.assertRaises(P.ProtocolError):
+            P.profile_packet(4, P.DONGLE)
+
+    def test_events(self):
+        self.assertEqual(P.parse_event(bytes.fromhex("06 fb 57 01 00 00 00 00")),
+                         {"event": "battery", "level": 87, "charging": True})
+        # Seen on hardware: 47%, not charging.
+        self.assertEqual(P.parse_event(bytes.fromhex("06 fb 2f 00 00 00 00 00")),
+                         {"event": "battery", "level": 47, "charging": False})
+        self.assertEqual(P.parse_event(bytes.fromhex("06 f6 01 00")), {"event": "profile", "profile": 2})
+        self.assertEqual(P.parse_event(bytes.fromhex("04 f1 03 00")), {"event": "profile", "profile": 3})
+        self.assertIsNone(P.parse_event(bytes.fromhex("04 f1 a0 00")))  # reset-to-default notice
+        self.assertIsNone(P.parse_event(bytes.fromhex("06 fb c8 00")))
+        self.assertIsNone(P.parse_event(bytes.fromhex("01 00 05 00")))
+
+
+class BindingTextTest(unittest.TestCase):
+    def test_round_trip(self):
+        for text in ("left-click", "dpi-shift:800", "media:mute", "key:ctrl+shift+t"):
+            self.assertEqual(bindings.format(bindings.parse(text)), text)
+
+    def test_aliases(self):
+        self.assertEqual(bindings.parse("key:Control+Esc"),
+                         {"type": "key", "key": "escape", "modifiers": ["ctrl"]})
+
+
+class ConfigTest(unittest.TestCase):
+    def test_round_trip_and_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "o2ctl", "config.json")
+            self.assertEqual(config.load(path), config.default_state())
+            state = config.default_state()
+            state["profiles"][1]["performance"]["polling_rate"] = 500
+            config.save(state, path)
+            self.assertEqual(config.load(path), state)
+
+            partial = {"active_profile": 9, "profiles": [{"performance": {"debounce": 6, "active_stage": 7}}]}
+            fixed = config.normalise(partial)
+            self.assertEqual(fixed["active_profile"], 1)
+            self.assertEqual(len(fixed["profiles"]), 3)
+            self.assertEqual(fixed["profiles"][0]["performance"]["debounce"], 6)
+            self.assertEqual(fixed["profiles"][0]["performance"]["active_stage"], 3)
+            self.assertEqual(set(fixed["profiles"][0]["buttons"]), set(P.BUTTONS))
+            self.assertEqual(len(fixed["profiles"][0]["lighting"]["colors"]), P.MAX_COLORS)
+
+
+# Report descriptors read from a real Model O 2 Wireless dongle.
+KEYBOARD_DESC = bytes.fromhex(
+    "05 01 09 06 a1 01 05 07 19 e0 29 e7 15 00 25 01 75 01 95 08 81 02 95 01 75 08 81 01"
+    " 95 05 75 01 05 08 19 01 29 05 91 02 95 01 75 03 91 01 95 06 75 08 15 00 26 ff 00"
+    " 05 07 19 00 2a ff 00 81 00 c0")
+VENDOR_DESC = bytes.fromhex(
+    "06 00 ff 09 01 a1 01 25 ff 75 08 95 3f 85 03 09 01 b1 02 c0 05 01 09 02 a1 01 85 01"
+    " 09 01 a1 00 05 09 19 01 29 07 15 00 25 01 95 07 75 01 81 02 95 01 75 01 81 01 05 01"
+    " 09 30 09 31 16 01 80 26 ff 7f 75 10 95 02 81 06 09 38 15 81 25 7f 75 08 95 01 81 06"
+    " 06 01 ff 09 f1 75 08 95 05 15 00 26 ff 00 81 00 c0 c0 05 0c 09 01 a1 01 85 04 19 00"
+    " 2a 9c 02 15 00 26 9c 02 75 10 95 01 81 00 c0 05 01 09 80 a1 01 85 05 1a 81 00 2a 83"
+    " 00 15 00 25 01 75 01 95 03 81 02 95 05 81 01 c0 06 00 ff 0a 00 ff a1 01 85 06 15 00"
+    " 26 ff 00 09 30 75 08 95 07 81 02 c0")
+
+
+class DiscoveryTest(unittest.TestCase):
+    def make_node(self, root, name, hid_id, desc, bcd="0259"):
+        usb = os.path.join(root, "usb", name)
+        hid = os.path.join(usb, "intf", "hid")
+        os.makedirs(hid)
+        with open(os.path.join(usb, "bcdDevice"), "w") as f:
+            f.write(bcd + "\n")
+        with open(os.path.join(hid, "uevent"), "w") as f:
+            f.write(f"DRIVER=hid-generic\nHID_ID={hid_id}\nHID_NAME=Glorious Model O 2 Wireless\n")
+        with open(os.path.join(hid, "report_descriptor"), "wb") as f:
+            f.write(desc)
+        node = os.path.join(root, "hidraw", name)
+        os.makedirs(node)
+        os.symlink(hid, os.path.join(node, "device"))
+
+    def test_finds_vendor_interface_and_prefers_cable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.make_node(tmp, "hidraw0", "0003:0000093A:0000822D", KEYBOARD_DESC)
+            self.make_node(tmp, "hidraw2", "0003:0000093A:0000822D", VENDOR_DESC)
+            self.make_node(tmp, "hidraw4", "0003:00002516:0000014D", VENDOR_DESC)
+            found = D.find_devices(os.path.join(tmp, "hidraw"))
+            self.assertEqual([(d.path, d.transport, d.firmware) for d in found],
+                             [("/dev/hidraw2", P.DONGLE, "0259")])
+            self.make_node(tmp, "hidraw9", "0003:0000093A:0000822A", VENDOR_DESC, bcd="0102")
+            found = D.find_devices(os.path.join(tmp, "hidraw"))
+            self.assertEqual([d.transport for d in found], [P.WIRED, P.DONGLE])
+
+
+class WriteTimingTest(unittest.TestCase):
+    """The dongle drops a profile switch that follows a burst too closely."""
+
+    def setUp(self):
+        self.now = 1000.0
+        self.log = []  # ("sleep", seconds) and ("write", command, time)
+        fake_time = type("T", (), {})()
+        fake_time.monotonic = lambda: self.now
+        fake_time.sleep = self.sleep
+        self.patches = [
+            unittest.mock.patch.object(D, "time", fake_time),
+            unittest.mock.patch.object(D.os, "open", lambda *a: 99),
+            unittest.mock.patch.object(D.os, "close", lambda fd: None),
+            unittest.mock.patch.object(D.fcntl, "ioctl", self.ioctl),
+            unittest.mock.patch.object(D, "_write_lock", contextlib.nullcontext),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def sleep(self, seconds):
+        self.log.append(("sleep", seconds))
+        self.now += seconds
+
+    def ioctl(self, fd, request, data):
+        self.log.append(("write", data[1], self.now))
+
+    def writes(self):
+        return [(cmd, t) for kind, cmd, *rest in self.log if kind == "write" for t in rest]
+
+    def test_profile_switch_waits_for_the_dongle_to_settle(self):
+        dev = D.Device("/dev/hidraw9", P.DONGLE)
+        state = config.default_state()
+        for n in (1, 2, 3):
+            dev.write_profile(n, config.profile(state, n))
+        dev.activate_profile(1)
+        writes = self.writes()
+        (last_cmd, last_t), (prev_cmd, prev_t) = writes[-1], writes[-2]
+        self.assertEqual(last_cmd, P.CMD_PROFILE)
+        # Measured from when the previous send finished (its trailing delay included).
+        prev_finished = prev_t + D.DELAYS[P.DONGLE]["buttons"]
+        self.assertGreaterEqual(last_t - prev_finished, D.PROFILE_SETTLE[P.DONGLE] - 1e-9)
+
+    def test_blocks_are_spaced(self):
+        dev = D.Device("/dev/hidraw9", P.DONGLE)
+        prof = config.default_profile()
+        dev.write_performance(1, prof)
+        dev.write_lighting(1, prof)
+        writes = self.writes()
+        first_light = next(t for cmd, t in writes if cmd == P.CMD_LIGHTING)
+        last_perf = max(t for cmd, t in writes if cmd == P.CMD_PERFORMANCE)
+        gap = first_light - (last_perf + D.DELAYS[P.DONGLE]["performance"])
+        self.assertGreaterEqual(gap, D.BLOCK_GAP[P.DONGLE] - 1e-9)
+
+    def test_first_write_does_not_wait(self):
+        dev = D.Device("/dev/hidraw9", P.DONGLE)
+        dev.activate_profile(2)
+        self.assertEqual(self.log[0][0], "write")
+
+
+if __name__ == "__main__":
+    unittest.main()
