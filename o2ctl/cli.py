@@ -61,7 +61,7 @@ def cmd_status(state, args):
         print("Not connected")
     reading = B.load()
     if reading:
-        print(f"Battery: {B.describe(reading)}")
+        print(f"Battery: {B.describe(reading, wired=bool(dev) and dev.transport == P.WIRED)}")
     number = _target(state, args)
     prof = config.profile(state, number)
     perf, light = prof["performance"], prof["lighting"]
@@ -253,7 +253,8 @@ def cmd_reset(state, args):
 
 def cmd_battery(state, args):
     if args.bar:
-        out = B.bar_output(B.load(), bool(D.find_devices()))
+        devices = D.find_devices()
+        out = B.bar_output(B.load(), bool(devices), wired=any(d.transport == P.WIRED for d in devices))
         if out["text"]:  # print nothing to hide: the Omarchy bar shows raw output for empty "text"
             print(json.dumps(out, ensure_ascii=False))
         return 0

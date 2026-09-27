@@ -54,10 +54,12 @@ def record(event, path=None, now=None):
     return reading
 
 
-def describe(reading, now=None):
+def describe(reading, now=None, wired=False):
     """'47%, charging · 12 min ago' style summary."""
     now = time.time() if now is None else now
     age = int(now - reading["time"])
+    if wired:
+        return f"charging on the cable (last report {reading['level']}%, {_ago(age)})"
     if reading["charging"] and age >= STALE:
         return f"charging (was {reading['level']}% {_ago(age)}; no reports until unplugged)"
     text = f"{reading['level']}%" + (", charging" if reading["charging"] else "")
@@ -67,6 +69,8 @@ def describe(reading, now=None):
 
 
 def _ago(seconds):
+    if seconds < 60:
+        return "just now"
     if seconds < 3600:
         return f"{seconds // 60} min ago"
     if seconds < 86400:
@@ -74,14 +78,19 @@ def _ago(seconds):
     return f"{seconds // 86400} d ago"
 
 
-def bar_output(reading, connected, now=None):
+def bar_output(reading, connected, now=None, wired=False):
     """Waybar-style JSON for the Omarchy bar's command module.
 
     Empty text hides the module, which is what happens when neither the
-    dongle nor the cable is plugged in.
+    dongle nor the cable is plugged in. On the cable the mouse charges and
+    sends no reports (Glorious CORE can't ask either; it shows "charging"
+    for as long as the cable is there), so show only the bolt.
     """
     if not connected:
         return {"text": "", "tooltip": ""}
+    if wired:
+        tip = f"Model O 2: {describe(reading, now, wired) if reading else 'charging on the cable'}"
+        return {"text": f"{ICON} {CHARGING}", "tooltip": tip, "class": ["charging"]}
     if reading is None:
         return {"text": ICON, "tooltip": "Model O 2: waiting for the first battery report (can take a few minutes)",
                 "class": "unknown"}

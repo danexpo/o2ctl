@@ -731,7 +731,8 @@ class Window(Adw.ApplicationWindow):
         reading = B.load()
         if not reading:
             return
-        self.battery_row.set_subtitle(B.describe(reading))
+        wired = self.device is not None and self.device.transport == P.WIRED
+        self.battery_row.set_subtitle(B.describe(reading, wired=wired))
         self.battery_bar.set_value(reading["level"])
         self.battery_bar.set_visible(True)
 

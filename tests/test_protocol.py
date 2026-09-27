@@ -462,6 +462,14 @@ class BatteryTest(unittest.TestCase):
         self.assertEqual(out["text"], f"{B.ICON} 12% {B.CHARGING}")
         self.assertEqual(out["class"], [])
 
+    def test_bar_on_cable_shows_charging(self):
+        now = 10000.0
+        out = B.bar_output({"level": 96, "charging": False, "time": now - 7200}, True, now, wired=True)
+        self.assertEqual(out["text"], f"{B.ICON} {B.CHARGING}")
+        self.assertEqual(out["tooltip"], "Model O 2: charging on the cable (last report 96%, 2 h ago)")
+        out = B.bar_output(None, True, now, wired=True)
+        self.assertEqual(out["tooltip"], "Model O 2: charging on the cable")
+
     def test_bar_stale_charging_hides_level(self):
         # Seen on hardware: no reports while on the cable, so the level froze at 3%.
         now = 10000.0
