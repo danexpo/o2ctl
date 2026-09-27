@@ -17,6 +17,8 @@ from . import device as D
 
 LOW = (15, 5)             # notify when the level drops to each of these
 STALE = 15 * 60           # a reading this old means the mouse is asleep or off
+# The mouse stops reporting while it charges, so an old "charging" reading's
+# level is long out of date; show that it's charging, not the number.
 ICON = "\U000f037d"       # nerd font "mouse"
 CHARGING = "\U000f140b"   # nerd font "lightning bolt"
 
@@ -55,8 +57,10 @@ def record(event, path=None, now=None):
 def describe(reading, now=None):
     """'47%, charging · 12 min ago' style summary."""
     now = time.time() if now is None else now
-    text = f"{reading['level']}%" + (", charging" if reading["charging"] else "")
     age = int(now - reading["time"])
+    if reading["charging"] and age >= STALE:
+        return f"charging (was {reading['level']}% {_ago(age)}; no reports until unplugged)"
+    text = f"{reading['level']}%" + (", charging" if reading["charging"] else "")
     if age >= STALE:
         text += f" · {_ago(age)}"
     return text
@@ -83,9 +87,12 @@ def bar_output(reading, connected, now=None):
                 "class": "unknown"}
     now = time.time() if now is None else now
     level = reading["level"]
+    stale = now - reading["time"] >= STALE
+    if reading["charging"] and stale:
+        return {"text": f"{ICON} {CHARGING}", "tooltip": f"Model O 2: {describe(reading, now)}",
+                "class": ["charging"]}
     text = f"{ICON} {level}%" + (f" {CHARGING}" if reading["charging"] else "")
     low = level <= LOW[0] and not reading["charging"]
-    stale = now - reading["time"] >= STALE
     klass = ["low", "active"] if low else []
     if stale:
         klass.append("stale")

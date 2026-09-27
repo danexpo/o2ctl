@@ -109,7 +109,10 @@ The installer adds this entry to the right side of the Omarchy bar in
 
 It shows a mouse icon and the level, a bolt while charging, and highlights
 at 15 % or below. The tooltip says how old the reading is. It hides when
-neither the dongle nor the cable is plugged in. `o2ctl battery --bar`
+neither the dongle nor the cable is plugged in. The mouse stops reporting
+while it charges, so after 15 minutes on the cable the bar shows only the
+bolt, not the frozen level; the real level returns within a minute or two of
+unplugging. `o2ctl battery --bar`
 prints Waybar-style JSON, so the same command works as a Waybar
 `custom` module with `"return-type": "json"`.
 

@@ -131,7 +131,7 @@ uses ids 1–16.
 
 | report | meaning |
 |--------|---------|
-| `06 FB <level> <charging>` | battery; sent about every 65 s over the dongle (**verified**: `06 fb 2f 00` = 47 %) |
+| `06 FB <level> <charging>` | battery; sent about every 65 s over the dongle (**verified**: `06 fb 2f 00` = 47 %); after the first `charging` report none arrive until unplugged (seen 2026-09-27: 2.5 h silent, then 98 %) |
 | `06 F6 <index>` | the mouse switched profile itself (0-based) |
 | `06 F9 <≥80> <slot>` | button bound to a host shortcut was pressed |
 | `04 F1 <1-3>` | profile change over the cable; `04 F1 A0` = reset to default |

@@ -462,6 +462,14 @@ class BatteryTest(unittest.TestCase):
         self.assertEqual(out["text"], f"{B.ICON} 12% {B.CHARGING}")
         self.assertEqual(out["class"], [])
 
+    def test_bar_stale_charging_hides_level(self):
+        # Seen on hardware: no reports while on the cable, so the level froze at 3%.
+        now = 10000.0
+        out = B.bar_output({"level": 3, "charging": True, "time": now - 9000}, True, now)
+        self.assertEqual(out["text"], f"{B.ICON} {B.CHARGING}")
+        self.assertEqual(out["tooltip"], "Model O 2: charging (was 3% 2 h ago; no reports until unplugged)")
+        self.assertNotIn("percentage", out)
+
     def test_low_alert_once_per_threshold(self):
         alert = B.LowBatteryAlert((15, 5))
         self.assertIsNone(alert.check(40, False))

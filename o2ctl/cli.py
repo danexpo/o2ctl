@@ -61,9 +61,7 @@ def cmd_status(state, args):
         print("Not connected")
     reading = B.load()
     if reading:
-        age = int(time.time() - reading["time"]) // 60
-        charging = ", charging" if reading["charging"] else ""
-        print(f"Battery: {reading['level']}%{charging} (reported {age} min ago)")
+        print(f"Battery: {B.describe(reading)}")
     number = _target(state, args)
     prof = config.profile(state, number)
     perf, light = prof["performance"], prof["lighting"]
