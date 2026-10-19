@@ -15,7 +15,7 @@ distro. It covers what Glorious CORE does for this mouse:
 - Macros: up to 16, stored on the mouse and shared by all profiles, played
   once, repeated while held, or repeated until pressed again
 - The three onboard profiles
-- Battery level. The dongle reports it about once a minute.
+- Battery level in the status bar, with a warning when it runs low
 - Firmware updates over the cable, from the window menu (*Firmware…*) or
   `o2ctl firmware update` (see `docs/FIRMWARE.md`)
 
@@ -31,8 +31,9 @@ desktop's settings or `bluetoothctl` first.
 
 This puts `o2ctl` in `~/.local/bin`, adds a **Model O 2 Settings** entry
 to the app launcher (Super + Space on Omarchy), starts the watcher (battery
-level and button commands) and adds the mouse battery to the Omarchy bar. You need system
-`python-gobject` and `libadwaita`, which Omarchy already ships.
+level and button commands) and adds the mouse battery to the Omarchy bar.
+You need system `python-gobject` and `libadwaita`, which Omarchy already
+ships.
 
 Access without root needs a udev rule. The installer prints the two sudo
 commands if the rule is missing or out of date:
@@ -101,12 +102,12 @@ other computers. The *Macros* tab in the window does the same as
 ## Battery in the bar
 
 Through the dongle the mouse sends its battery level on its own every one
-to few minutes; on the cable it sends nothing but answers when asked. After a
-restart the bar shows the last cached level until the next report. The
+to few minutes. On the cable and over Bluetooth it answers when asked. The
 `o2ctl-watch` user service (`o2ctl watch`) listens for those reports, asks
-once a minute while the cable is in, caches the latest in
+once a minute on the cable or Bluetooth, caches the latest in
 `~/.local/state/o2ctl/battery.json` and sends a notification at 15 % and
-again at 5 %.
+again at 5 %. After a restart the bar shows the last cached level until the
+next reading.
 
 The installer adds this entry to the right side of the Omarchy bar in
 `~/.config/omarchy/shell.json`, once. Delete it there and it stays deleted.
@@ -117,14 +118,12 @@ The installer adds this entry to the right side of the Omarchy bar in
 ```
 
 It shows a mouse icon and the level, a bolt while charging, and highlights
-at 15 % or below. The tooltip says how old the reading is. It hides when
-neither the dongle nor the cable is plugged in. The mouse stops reporting
-while it charges and can't be asked (Glorious CORE can't either), so while
-the cable is plugged into the computer the bar shows only the bolt. On a
-wall charger it does the same once the charging report is 15 minutes old.
-The real level returns within a minute or two of unplugging. `o2ctl battery --bar`
-prints Waybar-style JSON, so the same command works as a Waybar
-`custom` module with `"return-type": "json"`.
+at 15 % or below. The tooltip says how old the reading is. It hides when the
+mouse isn't connected at all. Through the dongle the mouse stops reporting
+while it charges, so on a wall charger the bar shows only the bolt once the
+charging report is 15 minutes old; the level returns within a minute or two
+of unplugging. `o2ctl battery --bar` prints Waybar-style JSON, so the same
+command works as a Waybar `custom` module with `"return-type": "json"`.
 
 ```sh
 systemctl --user status o2ctl-watch
@@ -151,7 +150,7 @@ its profiles and macros; `o2ctl apply --all` restores them.
 ```
 
 `o2ctl/protocol.py` builds the packets and has no I/O. The tests check its
-output against byte layouts taken from Glorious CORE, plus one packet
-confirmed on a real mouse. `docs/PROTOCOL.md` describes the wire format.
+output against byte layouts taken from Glorious CORE and packets confirmed
+on a real mouse. `docs/PROTOCOL.md` describes the wire format.
 
-Not affiliated with Glorious.
+MIT licensed (see `LICENSE`). Not affiliated with Glorious.

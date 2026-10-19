@@ -140,8 +140,8 @@ uses ids 1–16.
 
 `03 06 <route> <minutes>`, 1–15 (CORE 1's slider), `FF` for never.
 **Verified** over the cable: with 1, every LED went dark after about 30 s
-without use, including a left strip whose blue channel is stuck on and which
-no lighting setting turns off. Moving the mouse lights them again. Whether the
+without use, even an LED with a faulty, stuck-on channel that no lighting
+setting turns off. Moving the mouse lights them again. Whether the
 unit really is minutes isn't checked; 1 gave about 30 s.
 
 ## 08 battery query

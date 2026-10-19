@@ -87,9 +87,9 @@ def _ago(seconds):
 def bar_output(reading, connected, now=None, wired=False):
     """Waybar-style JSON for the Omarchy bar's command module.
 
-    Empty text hides the module, which is what happens when neither the
-    dongle nor the cable is plugged in. On the cable the watcher asks for
-    the level; until it has a fresh answer, show only the bolt.
+    Empty text hides the module, which is what happens when the mouse isn't
+    connected at all. On the cable the watcher asks for the level; until it
+    has a fresh answer, show only the bolt.
     """
     if not connected:
         return {"text": "", "tooltip": ""}

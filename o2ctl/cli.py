@@ -349,7 +349,7 @@ def _part(dev):
 def cmd_firmware(state, args):
     devices = D.find_devices()
     if not devices:
-        print("Model O 2 Wireless not found (no dongle or cable).", file=sys.stderr)
+        print("Model O 2 Wireless not found (no dongle, cable or Bluetooth).", file=sys.stderr)
         return 1
     for dev in devices:
         print(f"{_part(dev).capitalize()}: {dev.firmware or 'unknown'} ({dev.label})")
