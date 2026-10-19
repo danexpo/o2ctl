@@ -7,7 +7,8 @@ distro. It covers what Glorious CORE does for this mouse:
 - DPI stages: 1–6 stages, 100–26000 in steps of 50, with an indicator colour each
   and the stage the mouse starts on
 - Polling rate (125/250/500/1000 Hz), lift-off distance (1/2 mm), debounce (0–16 ms), motion sync
-- Lighting: all 9 onboard effects, with brightness, speed and colours
+- Lighting: all 9 onboard effects, with brightness, speed and colours, and
+  all lights off after 1–15 idle minutes
 - Button remapping: mouse functions, DPI up/down/cycle/shift, profile cycling,
   media keys, keystrokes with modifiers, macros, or disabled
 - Macros: up to 16, stored on the mouse and shared by all profiles, played
@@ -56,6 +57,7 @@ o2ctl debounce 4
 o2ctl motion-sync on
 o2ctl lighting breathing -b 80 -s 40 -c '#ff0000' '#0000ff'
 o2ctl lighting single-color -c '#00ff00'
+o2ctl sleep 5                          # all lights off after 5 idle minutes; "off" = never
 o2ctl bind forward media:volume-up
 o2ctl bind back key:ctrl+c
 o2ctl bind dpi dpi-shift:400           # sniper button

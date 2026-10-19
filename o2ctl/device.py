@@ -12,8 +12,10 @@ from . import protocol as P
 
 # Pauses after each packet, from Glorious CORE's send loop.
 DELAYS = {
-    P.DONGLE: {"profile": 0.15, "performance": 0.15, "lighting": 0.05, "buttons": 0.15, "macro": 0.03},
-    P.WIRED: {"profile": 0.10, "performance": 0.15, "lighting": 0.10, "buttons": 0.10, "macro": 0.03},
+    P.DONGLE: {"profile": 0.15, "performance": 0.15, "lighting": 0.05, "buttons": 0.15, "macro": 0.03,
+               "sleep": 0.03},
+    P.WIRED: {"profile": 0.10, "performance": 0.15, "lighting": 0.10, "buttons": 0.10, "macro": 0.03,
+              "sleep": 0.03},
 }
 
 # Quiet time the dongle needs before the next write. It relays packets over the
@@ -149,6 +151,9 @@ class Device:
         """Store one saved macro ({"id", "steps"}) on the mouse."""
         packets = P.macro_packets(macro["id"], macro["steps"], self.transport)
         self.send(packets, DELAYS[self.transport]["macro"])
+
+    def write_sleep(self, minutes):
+        self.send(P.sleep_packet(minutes, self.transport), DELAYS[self.transport]["sleep"])
 
     def write_profile(self, number, profile):
         self.write_performance(number, profile)

@@ -5,8 +5,10 @@ This comes from reading Glorious CORE 2.1.21 (`resources/app.asar`,
 `PreparePresetEffectBuffers`, `PrepareKeybindingBuffers2`,
 `PrepareProfileUpdateBuffer2`). The macro format comes from CORE 2.1.3
 (`ModelOV2Series.SetMacroDataToDevice` and `MacroToData`; the 2.1.21 installer
-couldn't be unpacked on Linux). Anything marked **verified** was confirmed
-on a real mouse through the dongle.
+couldn't be unpacked on Linux). Commands 06 and 08 come from CORE 1.1.36, the
+last CORE 1 (`ModelOV2Series.js`: `SetSleepTimetoDevice`,
+`GetDeviceBatteryStats`); its lighting packets match CORE 2's byte for byte.
+Anything marked **verified** was confirmed on a real mouse.
 
 ## Transport
 
@@ -21,8 +23,8 @@ USB interface 1 is the one to use. Its report descriptor has vendor page
 consumer, system and vendor-input (report 6) collections.
 
 - **Commands** are `HIDIOCSFEATURE` with 64 bytes, `[03, cmd, route, ...]`.
-- **Reads** (`HIDIOCGFEATURE`) time out on the dongle (**verified**). CORE never reads settings back either.
-- **Firmware updates** are described in FIRMWARE.md; o2ctl doesn't do them.
+- **Reads** (`HIDIOCGFEATURE`) of settings time out on the dongle (**verified**). CORE never reads settings back either. Reads do answer after `08` (battery) and during firmware updates.
+- **Firmware updates** are described in FIRMWARE.md.
 - **Firmware** is the USB `bcdDevice` (`0x0259` → "0259"), which is what CORE's native `GetFWVersion` returns.
 
 | cmd | Meaning |
@@ -32,6 +34,8 @@ consumer, system and vendor-input (report 6) collections.
 | 03  | button bindings |
 | 04  | performance (DPI, polling, LOD, debounce, motion sync) |
 | 05  | macro data |
+| 06  | lights off when idle |
+| 08  | battery query (`08 14`); `08 06` over the cable is the reset after a firmware update |
 
 Profiles are numbered 1–3 on the wire.
 
@@ -126,6 +130,23 @@ uses ids 1–16.
 - **Dongle:** packets `03 05 FB <id-1> <chunk> <chunks> <steps>` with 3 steps (9 bytes) from byte 7.
 - **Cable:** packets `03 05 FA <id-1> <chunk> <chunks> <steps> 00` with 18 steps (54 bytes) from byte 8.
 - CORE waits 30 ms between packets, and 200 ms after the last one over the dongle.
+
+## 06 lights off when idle
+
+`03 06 <route> <minutes>`, 1–15 (CORE 1's slider), `FF` for never.
+**Verified** over the cable: with 1, every LED went dark after about 30 s
+without use, including a left strip whose blue channel is stuck on and which
+no lighting setting turns off. Moving the mouse lights them again. Whether the
+unit really is minutes isn't checked; 1 gave about 30 s.
+
+## 08 battery query
+
+`03 08 <route> 14`, then read feature report 3. The reply (report ID removed)
+is `08 14 <level %> <charging>`. **Verified**: over the cable `08 14 64 01`
+(100 %, charging); through the dongle, with the mouse on the cable at the
+time, `08 14 40 00`, the 64 % it last had on battery, so the dongle may answer
+from what it last heard. CORE 1 polls this instead of waiting for `06 FB`
+reports. o2ctl doesn't use it yet.
 
 ## Events (input report 6 on the same interface)
 

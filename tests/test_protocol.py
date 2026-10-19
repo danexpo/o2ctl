@@ -172,6 +172,20 @@ class ProfileAndEventsTest(unittest.TestCase):
         with self.assertRaises(P.ProtocolError):
             P.profile_packet(4, P.DONGLE)
 
+    def test_sleep_packet(self):
+        # A 1 sent over the cable turned every LED off when idle, stuck ones included.
+        self.assertEqual(P.sleep_packet(1, P.WIRED), [hexpad("03 06 fa 01")])
+        self.assertEqual(P.sleep_packet(15, P.DONGLE), [hexpad("03 06 fb 0f")])
+        self.assertEqual(P.sleep_packet(None, P.DONGLE), [hexpad("03 06 fb ff")])
+        for bad in (0, 16):
+            with self.assertRaises(P.ProtocolError):
+                P.sleep_packet(bad, P.DONGLE)
+
+    def test_sleep_setting_is_repaired(self):
+        self.assertIsNone(config.normalise({})["light_sleep"])
+        self.assertIsNone(config.normalise({"light_sleep": 40})["light_sleep"])
+        self.assertEqual(config.normalise({"light_sleep": 3})["light_sleep"], 3)
+
     def test_events(self):
         self.assertEqual(P.parse_event(bytes.fromhex("06 fb 57 01 00 00 00 00")),
                          {"event": "battery", "level": 87, "charging": True})

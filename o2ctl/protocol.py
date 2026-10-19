@@ -32,6 +32,7 @@ CMD_LIGHTING = 0x02
 CMD_BUTTONS = 0x03
 CMD_PERFORMANCE = 0x04
 CMD_MACRO = 0x05
+CMD_SLEEP = 0x06
 
 PROFILE_COUNT = 3
 DPI_MIN = 100
@@ -249,6 +250,19 @@ def parse_color(value):
         return tuple(bytes.fromhex(s))
     except ValueError:
         raise ProtocolError(f"bad colour: {value!r}") from None
+
+
+# Lights off after this many idle minutes; the range Glorious CORE 1 offers.
+SLEEP_MAX = 15
+SLEEP_NEVER = 0xFF
+
+
+def sleep_packet(minutes, transport):
+    """Turn every LED off after `minutes` without use (None: never)."""
+    _check_transport(transport)
+    if minutes is not None and not 1 <= minutes <= SLEEP_MAX:
+        raise ProtocolError(f"idle time must be 1-{SLEEP_MAX} minutes")
+    return [_packet(REPORT_ID, CMD_SLEEP, ROUTE[transport], SLEEP_NEVER if minutes is None else minutes)]
 
 
 def profile_packet(profile, transport):

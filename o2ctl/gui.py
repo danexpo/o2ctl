@@ -75,7 +75,7 @@ class Window(Adw.ApplicationWindow):
         self.loading = False
         self.writer = Writer(self.show_error)
         self.closing = False
-        self.unsent = set()  # (profile, block) or ("macro", id) changed while the mouse was away
+        self.unsent = set()  # (profile, block), ("macro", id) or ("sleep", None) changed while the mouse was away
 
         self.stack = Adw.ViewStack()
         self.toasts = Adw.ToastOverlay(child=self.stack)
@@ -99,6 +99,7 @@ class Window(Adw.ApplicationWindow):
         self.stack.add_titled_with_icon(self.build_macros(), "macros", "Macros", "media-record-symbolic")
 
         self.load_profile()
+        self.with_loading(self.load_sleep)
         self.refresh_connection()
         GLib.timeout_add_seconds(2, self.refresh_connection)
         threading.Thread(target=self.listen, daemon=True).start()
@@ -126,6 +127,9 @@ class Window(Adw.ApplicationWindow):
     def send(self, number, block):
         if number == "macro":
             self.send_macro(block)
+            return
+        if number == "sleep":
+            self.send_sleep()
             return
         dev = self.device
         if dev is None:
@@ -176,6 +180,7 @@ class Window(Adw.ApplicationWindow):
                 dev.write_macro(macro)
             for n in range(1, P.PROFILE_COUNT + 1):
                 dev.write_profile(n, config.profile(state, n))
+            dev.write_sleep(state["light_sleep"])
             dev.activate_profile(state["active_profile"])
             GLib.idle_add(self.show_error, "All profiles and macros written to the mouse.")
 
@@ -379,12 +384,46 @@ class Window(Adw.ApplicationWindow):
         self.colors_group.add(box)
         page.add(self.colors_group)
 
+        idle = Adw.PreferencesGroup(title="When idle")
+        self.sleep_switch = Adw.SwitchRow(title="Turn the lights off",
+                                          subtitle="All of them, after the mouse sits unused")
+        self.sleep_minutes = Adw.SpinRow.new_with_range(1, P.SLEEP_MAX, 1)
+        self.sleep_minutes.set_title("Minutes")
+        self.sleep_switch.connect("notify::active", self.on_sleep)
+        self.sleep_minutes.connect("notify::value", self.on_sleep)
+        idle.add(self.sleep_switch)
+        idle.add(self.sleep_minutes)
+        page.add(idle)
+
         note = Adw.PreferencesGroup(
             description="You can also change lighting on the mouse itself: hold wheel click + DPI and press "
                         "forward (effect), right (brightness), back (speed) or left (colour). Those changes "
                         "aren't seen here.")
         page.add(note)
         return page
+
+    def load_sleep(self):
+        minutes = self.state["light_sleep"]
+        self.sleep_switch.set_active(minutes is not None)
+        self.sleep_minutes.set_value(minutes or 5)
+        self.sleep_minutes.set_sensitive(minutes is not None)
+
+    def on_sleep(self, *_):
+        on = self.sleep_switch.get_active()
+        self.sleep_minutes.set_sensitive(on)
+        if self.loading:
+            return
+        self.state["light_sleep"] = int(self.sleep_minutes.get_value()) if on else None
+        config.save(self.state)
+        self.send_sleep()
+
+    def send_sleep(self):
+        dev = self.device
+        if dev is None:
+            self.unsent.add(("sleep", None))
+            return
+        minutes = self.state["light_sleep"]
+        self.writer.submit("sleep", lambda: dev.write_sleep(minutes))
 
     def make_scale(self, group, title, key, with_row=False):
         row = Adw.ActionRow(title=title)
@@ -719,7 +758,7 @@ class Window(Adw.ApplicationWindow):
             self.banner.set_revealed(False)
             if was is None or was.path != dev.path:
                 self.check_access(dev)
-                pending, self.unsent = sorted(self.unsent), set()
+                pending, self.unsent = sorted(self.unsent, key=str), set()  # mixed ints and strings
                 for number, block in pending:
                     self.send(number, block)
         self.show_battery()

@@ -63,6 +63,7 @@ def cmd_status(state, args):
     reading = B.load()
     if reading:
         print(f"Battery: {B.describe(reading, wired=bool(dev) and dev.transport == P.WIRED)}")
+    print(f"Lights off when idle: {_sleep_text(state['light_sleep'])}")
     number = _target(state, args)
     prof = config.profile(state, number)
     perf, light = prof["performance"], prof["lighting"]
@@ -105,7 +106,30 @@ def cmd_apply(state, args):
     for number in numbers:
         dev.write_profile(number, config.profile(state, number))
         print(f"Wrote profile {number}.")
+    dev.write_sleep(state["light_sleep"])
     dev.activate_profile(state["active_profile"])
+    return 0
+
+
+def _sleep_text(minutes):
+    return "never" if minutes is None else f"after {minutes} min"
+
+
+def cmd_sleep(state, args):
+    if args.minutes is None:
+        print(_sleep_text(state["light_sleep"]))
+        return 0
+    minutes = None if args.minutes.lower() in ("off", "never", "0") else int(args.minutes)
+    P.sleep_packet(minutes, P.DONGLE)  # validate before saving
+    state["light_sleep"] = minutes
+    config.save(state)
+    if args.no_apply:
+        return 0
+    dev = _device_or_none()
+    if dev is None:
+        print("Saved; will apply next time (o2ctl apply).", file=sys.stderr)
+        return 1
+    dev.write_sleep(minutes)
     return 0
 
 
@@ -434,6 +458,12 @@ def build_parser():
     s.add_argument("-s", "--speed", type=int, metavar="0-100")
     s.add_argument("-c", "--colors", nargs="+", metavar="HEX")
     s.set_defaults(func=cmd_lighting)
+
+    s = sub.add_parser("sleep", parents=[common], help="turn all lights off after idle minutes",
+                       description=f"Turn every LED off after 1-{P.SLEEP_MAX} minutes without use, or "
+                                   "'off' to keep them on. Moving the mouse turns them back on.")
+    s.add_argument("minutes", nargs="?", metavar=f"1-{P.SLEEP_MAX}|off")
+    s.set_defaults(func=cmd_sleep)
 
     s = sub.add_parser("bind", parents=[common], help="remap a button",
                        description="Actions: " + ", ".join(P.MOUSE_ACTIONS) +

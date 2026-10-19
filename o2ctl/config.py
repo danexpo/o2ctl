@@ -55,6 +55,7 @@ def default_state():
         "active_profile": 1,
         "profiles": [default_profile() for _ in range(P.PROFILE_COUNT)],
         "macros": [],
+        "light_sleep": None,  # minutes idle before the lights go off; None: never
     }
 
 
@@ -97,6 +98,8 @@ def normalise(state):
         (m for m in state["macros"] if isinstance(m, dict)
          and m.get("id") in range(1, P.MAX_MACROS + 1) and m.get("name") and m.get("steps")),
         key=lambda m: m["id"])
+    if state["light_sleep"] not in range(1, P.SLEEP_MAX + 1):
+        state["light_sleep"] = None
     if state["active_profile"] not in range(1, P.PROFILE_COUNT + 1):
         state["active_profile"] = 1
     return state
