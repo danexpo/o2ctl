@@ -16,13 +16,16 @@ DELAYS = {
                "sleep": 0.03},
     P.WIRED: {"profile": 0.10, "performance": 0.15, "lighting": 0.10, "buttons": 0.10, "macro": 0.03,
               "sleep": 0.03},
+    # CORE waits 30 ms after every Bluetooth packet.
+    P.BLUETOOTH: {"profile": 0.03, "performance": 0.03, "lighting": 0.03, "buttons": 0.03, "macro": 0.03,
+                  "sleep": 0.03},
 }
 
 # Quiet time the dongle needs before the next write. It relays packets over the
 # radio after the ioctl returns; a profile switch sent while it is still busy is
 # dropped (seen on hardware: "write all" ended on profile 3's lighting).
-BLOCK_GAP = {P.DONGLE: 0.3, P.WIRED: 0.05}
-PROFILE_SETTLE = {P.DONGLE: 1.0, P.WIRED: 0.2}
+BLOCK_GAP = {P.DONGLE: 0.3, P.WIRED: 0.05, P.BLUETOOTH: 0.1}
+PROFILE_SETTLE = {P.DONGLE: 1.0, P.WIRED: 0.2, P.BLUETOOTH: 0.3}
 
 UDEV_HINT = (
     "No permission to open {path}. Install the udev rule:\n"
@@ -35,8 +38,12 @@ def _ioc(direction, number, size):
     return (direction << 30) | (size << 16) | (ord("H") << 8) | number
 
 
-HIDIOCSFEATURE = _ioc(3, 0x06, P.PACKET_SIZE)
-HIDIOCGFEATURE = _ioc(3, 0x07, P.PACKET_SIZE)
+def HIDIOCSFEATURE(size):
+    return _ioc(3, 0x06, size)
+
+
+def HIDIOCGFEATURE(size):
+    return _ioc(3, 0x07, size)
 
 
 class DeviceError(RuntimeError):
@@ -51,26 +58,32 @@ def _ioctl_error(e):
     return DeviceError(f"Write failed: {e.strerror}")
 
 
+def _set_feature(fd, packet, size):
+    if len(packet) != size:
+        raise DeviceError(f"packet is {len(packet)} bytes, expected {size}")
+    try:
+        fcntl.ioctl(fd, HIDIOCSFEATURE(size), bytes(packet))
+    except OSError as e:
+        raise _ioctl_error(e) from None
+
+
 class RawHid:
     """Feature reports in both directions on one open node."""
 
-    def __init__(self, fd):
+    def __init__(self, fd, report_id=P.REPORT_ID, size=P.PACKET_SIZE):
         self.fd = fd
+        self.report_id = report_id
+        self.size = size
 
     def set_feature(self, packet):
-        if len(packet) != P.PACKET_SIZE:
-            raise DeviceError(f"packet is {len(packet)} bytes, expected {P.PACKET_SIZE}")
-        try:
-            fcntl.ioctl(self.fd, HIDIOCSFEATURE, bytes(packet))
-        except OSError as e:
-            raise _ioctl_error(e) from None
+        _set_feature(self.fd, packet, self.size)
 
-    def get_feature(self, report_id=P.REPORT_ID):
+    def get_feature(self, report_id=None):
         """Read a feature report; returns it without the report ID."""
-        buf = bytearray(P.PACKET_SIZE)
-        buf[0] = report_id
+        buf = bytearray(self.size)
+        buf[0] = self.report_id if report_id is None else report_id
         try:
-            fcntl.ioctl(self.fd, HIDIOCGFEATURE, buf, True)
+            fcntl.ioctl(self.fd, HIDIOCGFEATURE(self.size), buf, True)
         except OSError as e:
             raise _ioctl_error(e) from None
         return bytes(buf[1:])
@@ -88,7 +101,7 @@ class Device:
 
     @property
     def label(self):
-        return {P.DONGLE: "2.4 GHz dongle", P.WIRED: "USB cable"}[self.transport]
+        return {P.DONGLE: "2.4 GHz dongle", P.WIRED: "USB cable", P.BLUETOOTH: "Bluetooth"}[self.transport]
 
     def _open(self, flags):
         try:
@@ -102,6 +115,7 @@ class Device:
         """Write feature reports, first waiting `gap` seconds after the previous send."""
         if gap is None:
             gap = BLOCK_GAP[self.transport]
+        _, size = P.report_format(self.transport)
         with _write_lock():
             wait = self._last_write + gap - time.monotonic()
             if wait > 0:
@@ -109,12 +123,7 @@ class Device:
             fd = self._open(os.O_RDWR)
             try:
                 for packet in packets:
-                    if len(packet) != P.PACKET_SIZE:
-                        raise DeviceError(f"packet is {len(packet)} bytes, expected {P.PACKET_SIZE}")
-                    try:
-                        fcntl.ioctl(fd, HIDIOCSFEATURE, bytes(packet))
-                    except OSError as e:
-                        raise _ioctl_error(e) from None
+                    _set_feature(fd, packet, size)
                     time.sleep(delay)
             finally:
                 os.close(fd)
@@ -126,7 +135,7 @@ class Device:
         with _write_lock():
             fd = self._open(os.O_RDWR)
             try:
-                yield RawHid(fd)
+                yield RawHid(fd, *P.report_format(self.transport))
             finally:
                 os.close(fd)
                 self._last_write = time.monotonic()
@@ -134,8 +143,9 @@ class Device:
     def query_battery(self, tries=3):
         """Ask the mouse for its battery level, as CORE 1 does: write, wait, read.
 
-        Only worth doing over the cable. The dongle answers too, but with the
-        last level it heard, even when the mouse is off or on the cable.
+        Only worth doing over the cable or Bluetooth. The dongle answers too,
+        but with the last level it heard, even when the mouse is off or on
+        the cable.
         """
         packet = P.battery_query_packet(self.transport)
         with self.raw() as hid:
@@ -231,13 +241,29 @@ def _read(path):
         return None
 
 
-def _is_config_interface(descriptor):
-    # Vendor page 0xFF00, usage 1, holding feature report 3.
-    return descriptor is not None and descriptor.startswith(bytes.fromhex("0600ff0901a101")) and b"\x85\x03" in descriptor
+VENDOR_COLLECTION = bytes.fromhex("0600ff0901a101")  # usage page 0xFF00, usage 1
+
+
+def _is_config_interface(descriptor, bus=0x03):
+    if descriptor is None:
+        return False
+    if bus == 0x05:
+        # Bluetooth puts every collection on one node; the vendor one holds report 5.
+        at = descriptor.find(VENDOR_COLLECTION)
+        return at >= 0 and b"\x85\x05" in descriptor[at:]
+    # USB: interface 1 starts with the vendor collection, holding report 3.
+    return descriptor.startswith(VENDOR_COLLECTION) and b"\x85\x03" in descriptor
+
+
+TRANSPORT_OF = {(0x03, P.PID_DONGLE): P.DONGLE, (0x03, P.PID_WIRED): P.WIRED,
+                (0x05, P.PID_BLUETOOTH): P.BLUETOOTH}
+# The dongle stays enumerated when the mouse is off, cabled or on Bluetooth,
+# so it comes last.
+PREFERENCE = (P.WIRED, P.BLUETOOTH, P.DONGLE)
 
 
 def find_devices(sysfs="/sys/class/hidraw"):
-    """Every connected Model O 2 Wireless config interface, cable first."""
+    """Every connected Model O 2 Wireless config interface, cable first, dongle last."""
     found = []
     for node in sorted(glob.glob(os.path.join(sysfs, "hidraw*"))):
         uevent = (_read(os.path.join(node, "device", "uevent")) or b"").decode(errors="replace")
@@ -246,26 +272,18 @@ def find_devices(sysfs="/sys/class/hidraw"):
             bus, vid, pid = (int(x, 16) for x in fields.get("HID_ID", "").split(":"))
         except ValueError:
             continue
-        if bus != 0x03 or vid != P.VID or pid not in (P.PID_DONGLE, P.PID_WIRED):
+        transport = TRANSPORT_OF.get((bus, pid))
+        if vid != P.VID or transport is None:
             continue
-        if not _is_config_interface(_read(os.path.join(node, "device", "report_descriptor"))):
+        if not _is_config_interface(_read(os.path.join(node, "device", "report_descriptor")), bus):
             continue
-        usb_dev = os.path.realpath(os.path.join(node, "device", "..", ".."))
-        bcd = (_read(os.path.join(usb_dev, "bcdDevice")) or b"").decode().strip() or None
-        transport = P.DONGLE if pid == P.PID_DONGLE else P.WIRED
+        bcd = None
+        if bus == 0x03:  # Bluetooth has no USB device to read the version from
+            usb_dev = os.path.realpath(os.path.join(node, "device", "..", ".."))
+            bcd = (_read(os.path.join(usb_dev, "bcdDevice")) or b"").decode().strip() or None
         found.append(Device("/dev/" + os.path.basename(node), transport, bcd))
-    # The dongle stays enumerated when the mouse is off or cabled, so a
-    # wired connection wins when both are present.
-    found.sort(key=lambda d: d.transport != P.WIRED)
+    found.sort(key=lambda d: PREFERENCE.index(d.transport))
     return found
-
-
-def bluetooth_connected(sysfs="/sys/class/hidraw"):
-    for node in glob.glob(os.path.join(sysfs, "hidraw*")):
-        uevent = (_read(os.path.join(node, "device", "uevent")) or b"").decode(errors="replace")
-        if f"{P.VID:08X}:{P.PID_BLUETOOTH:08X}" in uevent.upper():
-            return True
-    return False
 
 
 def find_device():

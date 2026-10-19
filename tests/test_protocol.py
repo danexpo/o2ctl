@@ -727,3 +727,63 @@ class ShortcutTest(unittest.TestCase):
             raise ValueError("bad json")
         shortcuts.handle({"event": "button", "button": "forward"}, log.append, load=broken)
         self.assertIn("bad json", log[0])
+
+
+class BluetoothTest(unittest.TestCase):
+    def test_packets_are_dongle_ones_without_the_route(self):
+        self.assertEqual(P.battery_query_packet(P.BLUETOOTH), hexpad21("05 08 14"))
+        self.assertEqual(P.sleep_packet(None, P.BLUETOOTH), [hexpad21("05 06 ff")])
+        perf = config.default_profile()["performance"]
+        dongle = P.performance_packets(1, perf, P.DONGLE)
+        bt = P.performance_packets(1, perf, P.BLUETOOTH)
+        self.assertEqual([bytes(p[3:22]) for p in dongle], [bytes(p[2:]) for p in bt])
+        self.assertEqual(len(P.buttons_packets(1, P.DEFAULT_BINDINGS, P.BLUETOOTH)), 2)
+        (step,) = P.macro_packets(1, [{"key": "a", "down": True, "delay": 20}], P.BLUETOOTH)
+        self.assertEqual(step, hexpad21("05 05 00 00 01 01 80 14 04"))
+
+    def test_profile_keeps_the_cable_route(self):
+        # Verified: 05 01 02 is ignored, 05 01 FA 02 switches.
+        self.assertEqual(P.profile_packet(2, P.BLUETOOTH), [hexpad21("05 01 fa 02")])
+
+    def test_lighting_is_split_11_and_12(self):
+        light = {"effect": "single-color", "speed": 60, "brightness": 100, "colors": ["#00ff00"]}
+        p = P.lighting_packets(1, light, P.BLUETOOTH)
+        # Verified: turned the mouse solid green.
+        self.assertEqual(p, [hexpad21("05 02 00 01 04 0c 14 01 0c 14 00 ff 00"), hexpad21("05 02 01 01 04")])
+
+    def test_finds_bluetooth_node_after_cable_before_dongle(self):
+        bt_descriptor = bytes.fromhex("05010902a10185020901c0" "0600ff0901a1011500" "8505" "0901b102c0")
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, hid_id, descriptor in [
+                ("hidraw1", "0003:0000093A:0000822D", bytes.fromhex("0600ff0901a1018503c0")),
+                ("hidraw2", "0005:0000093A:0000822B", bt_descriptor),
+            ]:
+                dev = os.path.join(tmp, "hidraw", name, "device")
+                os.makedirs(dev)
+                with open(os.path.join(dev, "uevent"), "w") as f:
+                    f.write(f"HID_ID={hid_id}\n")
+                with open(os.path.join(dev, "report_descriptor"), "wb") as f:
+                    f.write(descriptor)
+            found = D.find_devices(os.path.join(tmp, "hidraw"))
+        self.assertEqual([(d.path, d.transport) for d in found],
+                         [("/dev/hidraw2", P.BLUETOOTH), ("/dev/hidraw1", P.DONGLE)])
+
+    def test_watcher_leaves_the_dongle_for_a_better_link(self):
+        now = [0.0]
+        dongle = D.Device("/dev/hidraw5", P.DONGLE)
+        found = [dongle]
+        stop = B._better_link(dongle, every=5, clock=lambda: now[0], find=lambda: found[0])
+        self.assertFalse(stop())
+        now[0] = 6
+        self.assertFalse(stop())  # still the best
+        found[0] = D.Device("/dev/hidraw8", P.BLUETOOTH)
+        now[0] = 8
+        self.assertFalse(stop())  # not time to look yet
+        now[0] = 12
+        self.assertTrue(stop())
+        self.assertIsNone(B._better_link(D.Device("/dev/hidraw9", P.WIRED)))
+
+
+def hexpad21(text):
+    raw = bytes.fromhex(text)
+    return raw + bytes(P.BT_PACKET_SIZE - len(raw))

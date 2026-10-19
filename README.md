@@ -19,8 +19,9 @@ distro. It covers what Glorious CORE does for this mouse:
 - Firmware updates over the cable, from the window menu (*Firmware…*) or
   `o2ctl firmware update` (see `docs/FIRMWARE.md`)
 
-Connections: the 2.4 GHz dongle (`093a:822d`) and the USB cable
-(`093a:822a`), both tested. Bluetooth isn't supported: switch the mouse to 2.4 GHz or plug it in.
+Connections: the 2.4 GHz dongle (`093a:822d`), the USB cable (`093a:822a`)
+and Bluetooth (`093a:822b`), all tested. Pair it over Bluetooth with your
+desktop's settings or `bluetoothctl` first.
 
 ## Install
 

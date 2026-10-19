@@ -3,7 +3,7 @@ and the status-bar output.
 
 Through the dongle the mouse sends a report on its own every minute or few,
 so `o2ctl watch` listens for those. On the cable it sends none, but answers
-when asked, so the watcher asks once a minute. Either way it caches the
+when asked, so the watcher asks once a minute; the same over Bluetooth. Either way it caches the
 latest reading; everything else (bar, `o2ctl battery`, the GUI) reads the
 cache. The watcher also runs the commands bound to buttons (shortcuts.py).
 """
@@ -22,6 +22,7 @@ from . import shortcuts
 LOW = (15, 5)             # notify when the level drops to each of these
 STALE = 15 * 60           # a reading this old means the mouse is asleep or off
 POLL = 60                 # seconds between questions over the cable, as CORE 1
+SWITCH_CHECK = 5          # seconds between looks for a better link while on the dongle
 # The mouse stops reporting while it charges, so an old "charging" reading's
 # level is long out of date; show that it's charging, not the number.
 ICON = "\U000f037d"       # nerd font "mouse"
@@ -150,6 +151,22 @@ def _handle(reading, alert, log):
         notify(reading["level"], threshold)
 
 
+def _better_link(dev, every=SWITCH_CHECK, clock=time.monotonic, find=None):
+    """A stop() for dev.events(): true once another link should be used."""
+    if dev.transport != P.DONGLE:
+        return None
+    find = find or D.find_device
+    last = [clock()]
+
+    def stop():
+        if clock() - last[0] < every:
+            return False
+        last[0] = clock()
+        best = find()
+        return best is not None and best.path != dev.path
+    return stop
+
+
 def watch(log=print):
     """Cache every battery report and run button commands until killed.
     Survives unplugging."""
@@ -176,13 +193,15 @@ def watch(log=print):
             log(f"Listening on {dev.label} ({dev.path}).")
             announced = dev.path
         try:
-            if dev.transport == P.WIRED:
+            if dev.transport in P.BATTERY_QUERY_LINKS:
                 reading = dev.query_battery()
                 if reading:
                     _handle(reading, alert, log)
-            # Come back every POLL seconds: to ask again, or to switch to the
-            # cable once it's plugged in.
-            for event in dev.events(timeout=POLL):
+            # Come back every POLL seconds: to ask again, or to switch to a
+            # better link (the cable) once it's there. The dongle is always
+            # present, so while on it look sooner: the mouse may be back on
+            # Bluetooth after dozing off.
+            for event in dev.events(timeout=POLL, stop=_better_link(dev)):
                 if event["event"] == "battery":
                     _handle(event, alert, log)
                 else:

@@ -788,11 +788,9 @@ class Window(Adw.ApplicationWindow):
         was = self.device
         self.device = dev
         if dev is None:
-            bt = D.bluetooth_connected()
-            self.connection_row.set_subtitle("Bluetooth (not configurable)" if bt else "Not connected")
-            self.banner.set_title(
-                "The mouse is on Bluetooth. Switch it to 2.4 GHz or plug in the cable to change settings."
-                if bt else "Plug in the dongle or cable. Changes are saved and sent once the mouse is back.")
+            self.connection_row.set_subtitle("Not connected")
+            self.banner.set_title("Connect the mouse with the dongle, cable or Bluetooth. Changes are saved "
+                                  "and sent once the mouse is back.")
             self.banner.set_revealed(True)
         else:
             what = "Receiver" if dev.transport == P.DONGLE else "Firmware"

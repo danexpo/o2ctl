@@ -1,15 +1,14 @@
 """Packet builders for the Glorious Model O 2 Wireless vendor protocol.
 
-Everything here is pure: settings in, 64-byte HID feature reports out. The
-layouts come from Glorious CORE 2.1.21 (MouseV2DeviceHandler and the
-Prepare*Buffers2 helpers in its main-process bundle). The dongle layout has
-been checked against real hardware; the wired layout is taken from the same
-code but has not been tried on a mouse yet.
+Everything here is pure: settings in, HID feature reports out. The layouts
+come from Glorious CORE 2.1.21 (MouseV2DeviceHandler and the
+Prepare*Buffers2 helpers in its main-process bundle) and CORE 1/2.1.3.
 
-Every packet is feature report 3: [0x03, command, route, ...]. The route
-byte is 0xFB through the 2.4 GHz dongle and 0xFA over the USB cable. The
-dongle carries small payloads, so larger blocks are split into numbered
-chunks.
+Over USB every packet is 64-byte feature report 3: [0x03, command, route,
+...]. The route byte is 0xFB through the 2.4 GHz dongle and 0xFA over the
+cable. The dongle carries small payloads, so larger blocks are split into
+numbered chunks. Bluetooth uses 21-byte feature report 5 with the dongle's
+packets minus the route byte: [0x05, command, ...].
 """
 
 import struct
@@ -21,11 +20,17 @@ PID_DONGLE = 0x822D
 
 WIRED = "wired"
 DONGLE = "dongle"
-TRANSPORTS = (WIRED, DONGLE)
+BLUETOOTH = "bluetooth"
+TRANSPORTS = (WIRED, DONGLE, BLUETOOTH)
 
 REPORT_ID = 0x03
 PACKET_SIZE = 64
 ROUTE = {DONGLE: 0xFB, WIRED: 0xFA}
+BT_REPORT_ID = 0x05
+BT_PACKET_SIZE = 21
+# Links where the mouse itself answers a battery query. The dongle answers
+# from what it last heard, so through it o2ctl waits for the mouse's reports.
+BATTERY_QUERY_LINKS = (WIRED, BLUETOOTH)
 
 CMD_PROFILE = 0x01
 CMD_LIGHTING = 0x02
@@ -228,8 +233,22 @@ class ProtocolError(ValueError):
 
 
 def _check_transport(transport):
-    if transport not in ROUTE:
+    if transport not in TRANSPORTS:
         raise ProtocolError(f"unsupported transport: {transport}")
+
+
+def report_format(transport):
+    """(feature report ID, packet size) for `transport`."""
+    _check_transport(transport)
+    return (BT_REPORT_ID, BT_PACKET_SIZE) if transport == BLUETOOTH else (REPORT_ID, PACKET_SIZE)
+
+
+def _bluetooth(packet):
+    """A dongle packet as Bluetooth sends it: report 5, no route byte, 21 bytes."""
+    body = bytes(packet[3:])
+    if any(body[BT_PACKET_SIZE - 2 :]):
+        raise ProtocolError("packet does not fit a Bluetooth report")
+    return bytearray([BT_REPORT_ID, packet[1]]) + body[: BT_PACKET_SIZE - 2]
 
 
 def _check_profile(profile):
@@ -237,8 +256,8 @@ def _check_profile(profile):
         raise ProtocolError(f"profile must be 1-{PROFILE_COUNT}, got {profile}")
 
 
-def _packet(*head):
-    p = bytearray(PACKET_SIZE)
+def _packet(*head, size=PACKET_SIZE):
+    p = bytearray(size)
     p[: len(head)] = bytes(head)
     return p
 
@@ -269,6 +288,8 @@ def sleep_packet(minutes, transport):
     _check_transport(transport)
     if minutes is not None and not 1 <= minutes <= SLEEP_MAX:
         raise ProtocolError(f"idle time must be 1-{SLEEP_MAX} minutes")
+    if transport == BLUETOOTH:
+        return [_bluetooth(p) for p in sleep_packet(minutes, DONGLE)]
     return [_packet(REPORT_ID, CMD_SLEEP, ROUTE[transport], SLEEP_NEVER if minutes is None else minutes)]
 
 
@@ -276,6 +297,10 @@ def profile_packet(profile, transport):
     """Make `profile` (1-3) the active onboard profile."""
     _check_transport(transport)
     _check_profile(profile)
+    if transport == BLUETOOTH:
+        # Unlike the other commands this keeps a route byte, the cable's (as
+        # CORE sends it); 05 01 <profile> is ignored.
+        return [_packet(BT_REPORT_ID, CMD_PROFILE, ROUTE[WIRED], profile, size=BT_PACKET_SIZE)]
     return [_packet(REPORT_ID, CMD_PROFILE, ROUTE[transport], profile)]
 
 
@@ -318,6 +343,8 @@ def performance_block(perf, transport):
 def performance_packets(profile, perf, transport):
     _check_transport(transport)
     _check_profile(profile)
+    if transport == BLUETOOTH:
+        return [_bluetooth(p) for p in performance_packets(profile, perf, DONGLE)]
     d = performance_block(perf, transport)
     if transport == WIRED:
         p = _packet(REPORT_ID, CMD_PERFORMANCE, ROUTE[WIRED], profile)
@@ -378,6 +405,14 @@ def lighting_packets(profile, light, transport):
         p = _packet(REPORT_ID, CMD_LIGHTING, ROUTE[WIRED], profile, effect_id)
         p[5:34] = d[0:29]
         return [p]
+    if transport == BLUETOOTH:
+        # Split differently from the dongle: 11 then 12 bytes.
+        packets = []
+        for index, (start, end) in enumerate(((0, 11), (11, 23))):
+            p = _packet(BT_REPORT_ID, CMD_LIGHTING, index, profile, effect_id, size=BT_PACKET_SIZE)
+            p[5 : 5 + end - start] = d[start:end]
+            packets.append(p)
+        return packets
     packets = []
     for index, (start, end) in enumerate(((0, 8), (8, 17), (17, 26))):
         p = _packet(REPORT_ID, CMD_LIGHTING, ROUTE[DONGLE], index, profile, effect_id)
@@ -446,6 +481,8 @@ def buttons_block(bindings):
 def buttons_packets(profile, bindings, transport):
     _check_transport(transport)
     _check_profile(profile)
+    if transport == BLUETOOTH:
+        return [_bluetooth(p) for p in buttons_packets(profile, bindings, DONGLE)]
     d = buttons_block(bindings)
     if transport == WIRED:
         p = _packet(REPORT_ID, CMD_BUTTONS, ROUTE[WIRED], profile)
@@ -496,6 +533,8 @@ def macro_packets(macro_id, steps, transport):
     _check_transport(transport)
     if not 1 <= macro_id <= MAX_MACROS:
         raise ProtocolError(f"macro id must be 1-{MAX_MACROS}")
+    if transport == BLUETOOTH:
+        return [_bluetooth(p) for p in macro_packets(macro_id, steps, DONGLE)]
     d = macro_block(steps)
     # Dongle: 3 steps per packet from byte 7. Cable: 18 steps per packet from byte 8.
     per, at = (18, 8) if transport == WIRED else (3, 7)
@@ -511,13 +550,15 @@ def macro_packets(macro_id, steps, transport):
 
 
 def battery_query_packet(transport):
-    """Ask for the battery level; the answer is read back as feature report 3."""
+    """Ask for the battery level; the answer is read back from the same feature report."""
     _check_transport(transport)
+    if transport == BLUETOOTH:
+        return _bluetooth(battery_query_packet(DONGLE))
     return _packet(REPORT_ID, CMD_BATTERY, ROUTE[transport], BATTERY_QUERY)
 
 
 def parse_battery_reply(reply):
-    """Feature report 3 (report ID removed) after a battery query: 08 14 level charging.
+    """The feature report (ID removed) after a battery query: 08 14 level charging.
 
     None when it isn't an answer, or the mouse hasn't answered yet (level FF).
     """

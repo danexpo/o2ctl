@@ -16,7 +16,7 @@ Anything marked **verified** was confirmed on a real mouse.
 |--------|--------------|------------|
 | 0x822D | 2.4 GHz dongle | `FB`     |
 | 0x822A | USB cable    | `FA`       |
-| 0x822B | Bluetooth    | report 5, 21 bytes (not implemented) |
+| 0x822B | Bluetooth    | none: report 5, see below |
 
 USB interface 1 is the one to use. Its report descriptor has vendor page
 `FF00` usage 1 with feature report 3 (63 bytes + ID), plus the mouse,
@@ -155,6 +155,31 @@ reports. o2ctl asks over the cable only, once a minute, where the mouse
 sends no reports of its own. CORE 1 also never polls this mouse through
 the dongle.
 
+## Bluetooth
+
+From CORE 2.1.3 and 2.1.21, all **verified** on the mouse (lighting, profile
+switch, DPI, buttons, a macro, the idle timer and the battery query).
+
+The mouse shows up as one hidraw node (bus 5, `0005:093A:822B`) carrying
+every collection. The vendor one (page `FF00`, usage 1) has **feature report
+5, 20 bytes + ID**, and the events come on input report 6 (7 bytes), the same
+as through the dongle. Report 3 there is the consumer collection, not the
+settings report.
+
+- **Packets** are the dongle's with the route byte removed: `05 <cmd> ...`,
+  where the dongle sends `03 <cmd> FB ...`. Performance (4 chunks), buttons
+  (2), macros (3 steps each), `05 06 <minutes>` and `05 08 14` all follow
+  this, and the battery reply reads back as `08 14 <level> <charging>`.
+- **Lighting** is split differently: two chunks, `05 02 <chunk> <profile>
+  <effect>` + block[0:11] and block[11:23], at byte 5.
+- **Profile switch** keeps the cable's route: `05 01 FA <profile>`. `05 01
+  <profile>` is ignored. CORE builds the cable packet and sends it as report 5.
+- CORE waits 30 ms after every packet.
+- **Links:** the Bluetooth node goes away when the mouse dozes off and comes
+  back when it's moved. The dongle stays listed throughout, so o2ctl
+  prefers cable, then Bluetooth, then dongle.
+- **No firmware version:** there's no USB `bcdDevice` to read.
+
 ## Events (input report 6 on the same interface)
 
 | report | meaning |
@@ -162,7 +187,7 @@ the dongle.
 | `06 FB <level> <charging>` | battery; sent about every 65 s over the dongle (**verified**: `06 fb 2f 00` = 47 %); after the first `charging` report none arrive until unplugged (seen 2026-09-27: 2.5 h silent, then 98 %), and none arrive over the cable at all. Over the cable, ask with `08` instead (see above). |
 | `06 F6 <index>` | the mouse switched profile itself (0-based) |
 | `06 F9 <≥80> <slot> <layer>` | a button bound to `04 01` was pressed, through the dongle (**verified**) |
-| `04 F7 <≥80> <slot>` | the same over the cable (**verified**) |
+| `04 F7 <≥80> <slot>` | the same over the cable (**verified**); Bluetooth sends the dongle's `06 F9` (**verified**) |
 | `04 F1 <1-3>` | profile change over the cable; `04 F1 A0` = reset to default |
 
 ## Timing (dongle)

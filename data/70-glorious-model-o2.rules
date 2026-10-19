@@ -1,4 +1,5 @@
 # Glorious Model O 2 Wireless: let the logged-in user configure it.
-# 093a:822d = 2.4 GHz dongle, 093a:822a = USB cable.
+# 093a:822d = 2.4 GHz dongle, 093a:822a = USB cable, 0005:093A:822B = Bluetooth.
 KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="093a", ATTRS{idProduct}=="822d", TAG+="uaccess"
 KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="093a", ATTRS{idProduct}=="822a", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="0005:093A:822B.*", TAG+="uaccess"

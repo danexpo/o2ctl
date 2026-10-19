@@ -16,11 +16,7 @@ from . import protocol as P
 def _device_or_none(quiet=False):
     dev = D.find_device()
     if dev is None and not quiet:
-        if D.bluetooth_connected():
-            print("The mouse is connected over Bluetooth, which o2ctl can't configure. "
-                  "Switch it to 2.4 GHz or plug in the cable.", file=sys.stderr)
-        else:
-            print("Model O 2 Wireless not found (no dongle or cable).", file=sys.stderr)
+        print("Model O 2 Wireless not found (no dongle, cable or Bluetooth).", file=sys.stderr)
     return dev
 
 
@@ -56,8 +52,6 @@ def cmd_status(state, args):
     if dev:
         fw = f", firmware {dev.firmware}" if dev.firmware else ""
         print(f"Connected: {dev.label} ({dev.path}{fw})")
-    elif D.bluetooth_connected():
-        print("Connected over Bluetooth (not configurable; use the dongle or cable)")
     else:
         print("Not connected")
     reading = B.load()
@@ -289,7 +283,7 @@ def cmd_battery(state, args):
             print(json.dumps(out, ensure_ascii=False))
         return 0
     dev = D.find_device()
-    if dev is not None and dev.transport == P.WIRED:
+    if dev is not None and dev.transport in P.BATTERY_QUERY_LINKS:
         reading = dev.query_battery()
         if reading:
             B.record(reading)
