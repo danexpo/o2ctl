@@ -2,8 +2,7 @@
 
 Settings for the **Glorious Model O 2 Wireless** on Linux, with a GTK 4 /
 libadwaita window and a CLI. It was built for Omarchy but works on any
-distro. It covers what Glorious CORE does for this mouse, apart from firmware
-updates (see `docs/FIRMWARE.md`):
+distro. It covers what Glorious CORE does for this mouse:
 
 - DPI stages: 1–6 stages, 100–26000 in steps of 50, with an indicator colour each
   and the stage the mouse starts on
@@ -15,6 +14,7 @@ updates (see `docs/FIRMWARE.md`):
   once, repeated while held, or repeated until pressed again
 - The three onboard profiles
 - Battery level. The dongle reports it about once a minute.
+- Firmware updates, over the cable (see `docs/FIRMWARE.md`)
 
 Connections: the 2.4 GHz dongle (`093a:822d`, tested) and the USB cable
 (`093a:822a`, built from the same protocol code but not tried on hardware
@@ -68,6 +68,8 @@ o2ctl -p 3 dpi 800 1600 ...            # edit a profile without switching to it
 o2ctl apply --all                      # push everything saved to the mouse
 o2ctl battery                          # cached level; --wait 90 for a fresh one
 o2ctl gui --page lighting
+o2ctl firmware                         # installed and latest versions
+o2ctl firmware update                  # flash Glorious' latest; mouse on the cable
 ```
 
 Run `o2ctl <command> -h` for details. `o2ctl bind -h` lists every action.

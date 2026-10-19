@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from o2ctl import battery as B  # noqa: E402
 from o2ctl import bindings, config  # noqa: E402
 from o2ctl import device as D  # noqa: E402
+from o2ctl import firmware as F  # noqa: E402
 from o2ctl import macros as M  # noqa: E402
 from o2ctl import protocol as P  # noqa: E402
 
@@ -438,6 +439,95 @@ class WriteTimingTest(unittest.TestCase):
         dev = D.Device("/dev/hidraw9", P.DONGLE)
         dev.activate_profile(2)
         self.assertEqual(self.log[0][0], "write")
+
+
+class FakeUpdater:
+    """Answers every command the way CORE expects, unless told to fail one."""
+
+    def __init__(self, mtu=4, max_object=8, fail=None):
+        self.mtu, self.max_object, self.fail = mtu, max_object, fail
+        self.sent = []
+
+    def set_feature(self, packet):
+        self.sent.append(bytes(packet))
+
+    def get_feature(self):
+        last = self.sent[-1]
+        reply = bytearray(63)
+        reply[0:4] = bytes([0x65, 1 if last[6] == self.fail else 0, 0, last[4]])
+        if last[6] == F.CMD_INIT:
+            reply[14:18] = self.max_object.to_bytes(4, "little")
+            reply[18:20] = self.mtu.to_bytes(2, "little")
+        if last[6] == F.CMD_INFO:
+            reply[9:15] = b"V0259\x00"
+        return bytes(reply)
+
+    def commands(self):
+        return [(p[6], p[4], p[7]) if p[2] == 0x65 else "reset" for p in self.sent]
+
+
+class FirmwareTest(unittest.TestCase):
+    # Expected bytes are worked out by hand from CORE 2.1.3's ModelOV2USBDriver.ts.
+
+    def test_prepare_packet(self):
+        self.assertEqual(F.command(0, 0, F.CMD_PREPARE, 6, bytes([0x27, 0, 0, 0, 0])),
+                         hexpad("03 f3 65 3a 00 00 27 00 06 27 00 00 00 00"))
+        self.assertEqual(F.command(1, 3, F.CMD_PREPARE, 6, bytes([0x27]) + (86632).to_bytes(4, "little")),
+                         hexpad("03 b2 65 3a 01 00 27 03 06 27 68 52 01 00"))
+
+    def test_reset_packet(self):
+        self.assertEqual(F.RESET, hexpad("03 08 fa 06"))
+
+    def test_chunks_stop_at_object_boundaries(self):
+        pieces = F.chunks(bytes(range(1, 14)), mtu=4, max_object=10)
+        self.assertEqual([len(p) for p in pieces], [4, 4, 2, 4])
+        self.assertEqual(pieces[-1], bytes([11, 12, 13, 0]))
+
+    def test_chunk_too_big_for_a_report(self):
+        with self.assertRaises(F.FirmwareError):
+            F.command(0, 0, F.CMD_CONTENT, 56, bytes(56))
+
+    def test_update_sequence(self):
+        hid = FakeUpdater(mtu=4, max_object=8)
+        image = bytes(range(1, 11))
+        F.Flasher(hid, sleep=lambda s: None).update(image)
+        self.assertEqual(hid.commands(), [
+            (0x27, 0, 0), (0x42, 1, 1), (0x23, 2, 2),        # check
+            (0x27, 1, 3), (0x42, 2, 4), (0x25, 3, 3),        # first counter restarts at 1
+            (0x40, 4, 6),
+            (0x41, 5, 7), (0x40, 6, 8), (0x41, 7, 9), (0x25, 8, 8),  # object boundary at 8
+            (0x40, 9, 11),
+            (0x41, 10, 12), (0x18, 11, 13), "reset",
+        ])
+        p = hid.sent
+        self.assertEqual(p[5][9:18], bytes([0x25, 0, 0, 0, 0, 8, 0, 0, 0]))
+        self.assertEqual(p[6][8:13], bytes([4, 1, 2, 3, 4]))
+        self.assertEqual(p[7][9:12], bytes([0x41, 10, 0]))     # sum before the boundary chunk
+        self.assertEqual(p[9][9:12], bytes([0x41, 36, 0]))     # and after it
+        self.assertEqual(p[10][9:14], bytes([0x25, 8, 0, 0, 0]))
+        self.assertEqual(p[11][8:13], bytes([4, 9, 10, 0, 0]))
+        self.assertEqual(p[12][9:12], bytes([0x41, 55, 0]))
+        self.assertEqual(p[13][8:21], bytes([0x0C, 0x18, 10, 0, 0, 0, 55, 0]) + b"V0259")
+
+    def test_bad_reply_stops_before_any_image_data(self):
+        hid = FakeUpdater(fail=F.CMD_INIT)
+        flasher = F.Flasher(hid, sleep=lambda s: None)
+        with self.assertRaises(F.FirmwareError):
+            flasher.update(bytes(10))
+        self.assertFalse(flasher.writing)
+        self.assertNotIn(F.CMD_CONTENT, [p[6] for p in hid.sent])
+
+    def test_load_image_picks_the_folder_for_the_part(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "fw.zip")
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("pkg/USB/mouse.bin", b"mouse")
+                z.writestr("pkg/USB/FWUpdate.exe", b"exe")
+                z.writestr("pkg/Dongle/dongle.bin", b"dongle")
+            self.assertEqual(F.load_image(path, P.WIRED), b"mouse")
+            self.assertEqual(F.load_image(path, P.DONGLE), b"dongle")
+        self.assertIsNone(F.image_info(b"mouse"))
 
 
 class BatteryTest(unittest.TestCase):

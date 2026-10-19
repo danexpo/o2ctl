@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -9,6 +10,7 @@ from . import battery as B
 from . import bindings, config
 from . import macros as M
 from . import device as D
+from . import firmware as F
 from . import protocol as P
 
 
@@ -300,6 +302,83 @@ def cmd_listen(state, args):
     return 0
 
 
+def _firmware_target(args):
+    """The device to update: the mouse over the cable, or the dongle."""
+    devices = D.find_devices()
+    want = P.DONGLE if args.dongle else P.WIRED
+    for dev in devices:
+        if dev.transport == want:
+            return dev
+    if want == P.WIRED:
+        raise D.DeviceError("Plug the mouse in with the USB cable; it can only be updated over the cable. "
+                            "(Use --dongle to update the dongle.)")
+    raise D.DeviceError("The dongle is not plugged in.")
+
+
+def _part(dev):
+    return "dongle" if dev.transport == P.DONGLE else "mouse"
+
+
+def cmd_firmware(state, args):
+    devices = D.find_devices()
+    if not devices:
+        print("Model O 2 Wireless not found (no dongle or cable).", file=sys.stderr)
+        return 1
+    for dev in devices:
+        print(f"{_part(dev).capitalize()}: {dev.firmware or 'unknown'} ({dev.label})")
+    if not any(d.transport == P.WIRED for d in devices):
+        print("(The mouse's own version shows when it is plugged in with the cable.)")
+    print(f"Latest from Glorious: {F.LATEST}")
+    return 0
+
+
+def cmd_firmware_check(state, args):
+    dev = _firmware_target(args)
+    with dev.raw() as hid:
+        ota, version = F.Flasher(hid).check()
+    print(f"{_part(dev).capitalize()} answered: version bytes {version.hex(' ')} ({version!r})")
+    print("Update parameters: " + ", ".join(f"{k} {v}" for k, v in ota.items()))
+    return 0
+
+
+def cmd_firmware_update(state, args):
+    dev = _firmware_target(args)
+    if args.file:
+        source = args.file
+    else:
+        cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "o2ctl")
+        print("Downloading the firmware from Glorious...")
+        source = F.download(cache)
+    image = F.load_image(source, dev.transport)
+    known = F.image_info(image)
+    if known is None and not args.force:
+        raise F.FirmwareError(f"{source} is not a firmware image o2ctl knows; use --force to flash it anyway")
+    if known and known[0] != dev.transport:
+        raise F.FirmwareError(f"that image is for the {'dongle' if known[0] == P.DONGLE else 'mouse'}, "
+                              f"not the {_part(dev)}")
+    version = known[1] if known else "unknown version"
+    print(f"Flashing {version} ({len(image)} bytes) onto the {_part(dev)}, now on {dev.firmware or 'unknown'}.")
+    print("If this fails partway the {} may stop working, with no known way to recover it.".format(_part(dev)))
+    if not args.yes:
+        if input("Type 'flash' to continue: ").strip() != "flash":
+            print("Cancelled.")
+            return 1
+    print("Don't unplug it or press its buttons until this finishes.")
+    flasher = F.Flasher(None, progress=lambda pct: print(f"\r  {pct:3d}%", end="", flush=True))
+    try:
+        with dev.raw() as hid:
+            flasher.hid = hid
+            flasher.update(image)
+    except (F.FirmwareError, D.DeviceError) as e:
+        print()
+        if flasher.writing:
+            raise F.FirmwareError(f"{e}. The update stopped partway. Leave it plugged in and run "
+                                  "o2ctl firmware update again.") from None
+        raise F.FirmwareError(f"{e}. Nothing was written; the firmware is unchanged.") from None
+    print(f"\nDone. The {_part(dev)} is restarting.")
+    return 0
+
+
 def cmd_gui(state, args):
     from . import gui
     return gui.main(args.page)
@@ -413,6 +492,19 @@ def build_parser():
     s.add_argument("seconds", nargs="?", type=float)
     s.set_defaults(func=cmd_listen)
 
+    s = sub.add_parser("firmware", help="show, check or update the firmware")
+    s.set_defaults(func=cmd_firmware)
+    fsub = s.add_subparsers(dest="firmware_command", metavar="action")
+    target = argparse.ArgumentParser(add_help=False)
+    target.add_argument("--dongle", action="store_true", help="the dongle instead of the mouse (cable)")
+    f = fsub.add_parser("check", parents=[target], help="read the version and update parameters; sends no firmware")
+    f.set_defaults(func=cmd_firmware_check)
+    f = fsub.add_parser("update", parents=[target], help="flash firmware (Glorious' latest unless FILE is given)")
+    f.add_argument("file", nargs="?", help="Glorious' firmware .zip or a .bin")
+    f.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+    f.add_argument("--force", action="store_true", help="flash an image o2ctl doesn't recognise")
+    f.set_defaults(func=cmd_firmware_update)
+
     s = sub.add_parser("gui", help="open the settings window")
     s.add_argument("--page", choices=["performance", "lighting", "buttons", "macros"], help="tab to open on")
     s.set_defaults(func=cmd_gui)
@@ -429,6 +521,6 @@ def main(argv=None):
     state = config.load()
     try:
         return args.func(state, args)
-    except (P.ProtocolError, D.DeviceError, ValueError) as e:
+    except (P.ProtocolError, D.DeviceError, F.FirmwareError, ValueError, OSError) as e:
         print(f"o2ctl: {e}", file=sys.stderr)
         return 1

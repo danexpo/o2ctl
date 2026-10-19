@@ -34,10 +34,44 @@ def _ioc(direction, number, size):
 
 
 HIDIOCSFEATURE = _ioc(3, 0x06, P.PACKET_SIZE)
+HIDIOCGFEATURE = _ioc(3, 0x07, P.PACKET_SIZE)
 
 
 class DeviceError(RuntimeError):
     pass
+
+
+def _ioctl_error(e):
+    if e.errno in (errno.ENODEV, errno.ENOENT):
+        return DeviceError("The mouse was disconnected.")
+    if e.errno in (errno.EPIPE, errno.ETIMEDOUT):
+        return DeviceError("The dongle did not accept the command. Is the mouse switched on?")
+    return DeviceError(f"Write failed: {e.strerror}")
+
+
+class RawHid:
+    """Feature reports in both directions on one open node."""
+
+    def __init__(self, fd):
+        self.fd = fd
+
+    def set_feature(self, packet):
+        if len(packet) != P.PACKET_SIZE:
+            raise DeviceError(f"packet is {len(packet)} bytes, expected {P.PACKET_SIZE}")
+        try:
+            fcntl.ioctl(self.fd, HIDIOCSFEATURE, bytes(packet))
+        except OSError as e:
+            raise _ioctl_error(e) from None
+
+    def get_feature(self, report_id=P.REPORT_ID):
+        """Read a feature report; returns it without the report ID."""
+        buf = bytearray(P.PACKET_SIZE)
+        buf[0] = report_id
+        try:
+            fcntl.ioctl(self.fd, HIDIOCGFEATURE, buf, True)
+        except OSError as e:
+            raise _ioctl_error(e) from None
+        return bytes(buf[1:])
 
 
 class Device:
@@ -78,14 +112,19 @@ class Device:
                     try:
                         fcntl.ioctl(fd, HIDIOCSFEATURE, bytes(packet))
                     except OSError as e:
-                        if e.errno in (errno.ENODEV, errno.ENOENT):
-                            raise DeviceError("The mouse was disconnected.") from None
-                        if e.errno in (errno.EPIPE, errno.ETIMEDOUT):
-                            raise DeviceError(
-                                "The dongle did not accept the command. Is the mouse switched on?"
-                            ) from None
-                        raise DeviceError(f"Write failed: {e.strerror}") from None
+                        raise _ioctl_error(e) from None
                     time.sleep(delay)
+            finally:
+                os.close(fd)
+                self._last_write = time.monotonic()
+
+    @contextmanager
+    def raw(self):
+        """Hold the node open, and other writers off, for a long exchange."""
+        with _write_lock():
+            fd = self._open(os.O_RDWR)
+            try:
+                yield RawHid(fd)
             finally:
                 os.close(fd)
                 self._last_write = time.monotonic()
