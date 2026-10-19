@@ -370,6 +370,12 @@ class Window(Adw.ApplicationWindow):
         group.add(self.effect_row)
 
         self.brightness_scale = self.make_scale(group, "Brightness", "brightness")
+        self.battery_switch = Adw.SwitchRow(title="Different brightness on battery",
+                                            subtitle="Brightness above then applies on the cable")
+        self.battery_switch.connect("notify::active", self.on_battery_switch)
+        group.add(self.battery_switch)
+        self.battery_row, self.battery_scale = self.make_scale(group, "On battery", "battery_brightness",
+                                                               with_row=True)
         self.speed_row, self.speed_scale = self.make_scale(group, "Speed", "speed", with_row=True)
         page.add(group)
 
@@ -452,6 +458,16 @@ class Window(Adw.ApplicationWindow):
             button.set_visible(i < count)
         self.speed_row.set_sensitive(effect in P.ANIMATED)
         self.brightness_scale.set_sensitive(effect != "off")
+        self.battery_switch.set_sensitive(effect != "off")
+        self.battery_row.set_visible(self.battery_switch.get_active())
+
+    def on_battery_switch(self, row, _pspec):
+        self.battery_row.set_visible(row.get_active())
+        if self.loading:
+            return
+        light = self.prof["lighting"]
+        light["battery_brightness"] = int(self.battery_scale.get_value()) if row.get_active() else None
+        self.changed("lighting")
 
     def on_light_scale(self, scale, key):
         if self.loading:
@@ -715,6 +731,9 @@ class Window(Adw.ApplicationWindow):
             self.debounce_row.set_value(perf["debounce"])
             self.motion_row.set_active(perf["motion_sync"])
             self.effect_row.set_selected(self.effect_names.index(light["effect"]))
+            battery = light["battery_brightness"]
+            self.battery_switch.set_active(battery is not None)
+            self.battery_scale.set_value(light["brightness"] if battery is None else battery)
             self.update_lighting_sensitivity(light["effect"])
             self.brightness_scale.set_value(light["brightness"])
             self.speed_scale.set_value(light["speed"])

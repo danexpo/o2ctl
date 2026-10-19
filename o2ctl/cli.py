@@ -81,7 +81,10 @@ def cmd_status(state, args):
     n = P.EFFECTS[light["effect"]][1]
     if n:
         colors = "  colours " + " ".join(light["colors"][:n])
-    print(f"  Lighting:     {P.EFFECT_LABELS[light['effect']]}, brightness {light['brightness']}%, "
+    battery = ""
+    if light["battery_brightness"] is not None:
+        battery = f" ({light['battery_brightness']}% on battery)"
+    print(f"  Lighting:     {P.EFFECT_LABELS[light['effect']]}, brightness {light['brightness']}%{battery}, "
           f"speed {light['speed']}%{colors}")
     for button in P.BUTTONS:
         print(f"  {P.BUTTON_LABELS[button] + ':':29}"
@@ -185,6 +188,8 @@ def cmd_lighting(state, args):
         light["effect"] = args.effect
     if args.brightness is not None:
         light["brightness"] = args.brightness
+    if args.battery_brightness is not None:
+        light["battery_brightness"] = None if args.battery_brightness == "same" else args.battery_brightness
     if args.speed is not None:
         light["speed"] = args.speed
     for i, color in enumerate(args.colors or []):
@@ -410,6 +415,15 @@ def on_off(text):
     raise argparse.ArgumentTypeError("use on or off")
 
 
+def percent_or_same(text):
+    if text.lower() == "same":
+        return "same"
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("use 0-100 or same") from None
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="o2ctl", description=__doc__)
     # -p/-n work before or after the command; the global copies use their own dests
@@ -460,6 +474,8 @@ def build_parser():
     s = sub.add_parser("lighting", parents=[common], help="RGB effect, brightness, speed, colours")
     s.add_argument("effect", nargs="?", choices=list(P.EFFECTS))
     s.add_argument("-b", "--brightness", type=int, metavar="0-100")
+    s.add_argument("--battery-brightness", type=percent_or_same, metavar="0-100|same",
+                   help="brightness while on battery; 'same' follows --brightness")
     s.add_argument("-s", "--speed", type=int, metavar="0-100")
     s.add_argument("-c", "--colors", nargs="+", metavar="HEX")
     s.set_defaults(func=cmd_lighting)

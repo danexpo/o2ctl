@@ -7,8 +7,8 @@ distro. It covers what Glorious CORE does for this mouse:
 - DPI stages: 1–6 stages, 100–26000 in steps of 50, with an indicator colour each
   and the stage the mouse starts on
 - Polling rate (125/250/500/1000 Hz), lift-off distance (1/2 mm), debounce (0–16 ms), motion sync
-- Lighting: all 9 onboard effects, with brightness, speed and colours, and
-  all lights off after 1–15 idle minutes
+- Lighting: all 9 onboard effects, with brightness, speed and colours, a
+  separate brightness on battery, and all lights off after 1–15 idle minutes
 - Button remapping: mouse functions, DPI up/down/cycle/shift, profile cycling,
   media keys, keystrokes with modifiers, macros, or disabled
 - Macros: up to 16, stored on the mouse and shared by all profiles, played
@@ -18,9 +18,8 @@ distro. It covers what Glorious CORE does for this mouse:
 - Firmware updates over the cable, from the window menu (*Firmware…*) or
   `o2ctl firmware update` (see `docs/FIRMWARE.md`)
 
-Connections: the 2.4 GHz dongle (`093a:822d`, tested) and the USB cable
-(`093a:822a`, built from the same protocol code but not tried on hardware
-yet). Bluetooth isn't supported: switch the mouse to 2.4 GHz or plug it in.
+Connections: the 2.4 GHz dongle (`093a:822d`) and the USB cable
+(`093a:822a`), both tested. Bluetooth isn't supported: switch the mouse to 2.4 GHz or plug it in.
 
 ## Install
 
@@ -57,6 +56,7 @@ o2ctl debounce 4
 o2ctl motion-sync on
 o2ctl lighting breathing -b 80 -s 40 -c '#ff0000' '#0000ff'
 o2ctl lighting single-color -c '#00ff00'
+o2ctl lighting --battery-brightness 0  # dark on battery, lit on the cable; "same" undoes it
 o2ctl sleep 5                          # all lights off after 5 idle minutes; "off" = never
 o2ctl bind forward media:volume-up
 o2ctl bind back key:ctrl+c

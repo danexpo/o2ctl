@@ -67,6 +67,28 @@ class LightingTest(unittest.TestCase):
             with self.assertRaises(P.ProtocolError):
                 P.parse_color(bad)
 
+    def test_battery_brightness_goes_in_byte_4(self):
+        light = {"effect": "single-color", "speed": 60, "brightness": 100, "colors": ["#00ff00"],
+                 "battery_brightness": 25}
+        block = P.lighting_block(light, P.DONGLE)
+        self.assertEqual((block[1], block[4]), (20, 5))
+        light["battery_brightness"] = 0
+        self.assertEqual(P.lighting_block(light, P.WIRED)[4], 0)
+        light["battery_brightness"] = None
+        self.assertEqual(P.lighting_block(light, P.DONGLE)[4], 20)
+        light["battery_brightness"] = 101
+        with self.assertRaises(P.ProtocolError):
+            P.lighting_block(light, P.DONGLE)
+
+    def test_battery_brightness_config(self):
+        def battery(value):
+            state = config.normalise({"profiles": [{"lighting": {"battery_brightness": value}}]})
+            return state["profiles"][0]["lighting"]["battery_brightness"]
+        self.assertIsNone(config.normalise({})["profiles"][0]["lighting"]["battery_brightness"])
+        self.assertEqual(battery(0), 0)
+        self.assertIsNone(battery(150))
+        self.assertIsNone(battery("dim"))
+
     def test_off_effect(self):
         light = {"effect": "off", "speed": 60, "brightness": 60, "colors": []}
         self.assertEqual(P.lighting_packets(1, light, P.DONGLE)[0][5], 0)

@@ -71,12 +71,16 @@ The block:
 | byte | value |
 |------|-------|
 | 0 | speed |
-| 1 | brightness, wired |
+| 1 | brightness on the cable |
 | 2 | colour count |
 | 3 | speed |
-| 4 | brightness, wireless |
+| 4 | brightness on battery |
 | 5.. (dongle) or 11.. (cable) | RGB triplets |
 
+- **Brightness** bytes 1 and 4 are the same unless CORE's "separate wired and
+  wireless brightness" is on. **Verified**: with 1 = 12 and 4 = 0, written over
+  the cable, the LEDs stay lit while plugged in and go dark the moment the
+  cable is pulled.
 - **Levels** are 0–20. CORE maps 0–100 % with `v > 4 ? v*20/100 : 1` (brightness 0 stays 0).
 - **Dongle:** 3 packets `03 02 FB <chunk> <profile> <effect>` + block[0:8], [8:17], [17:26], each at byte 6 (**verified**: `03 02 fb 00 01 04 0c 14 01 0c 14 00 ff 00` gives solid green).
 - **Cable:** `03 02 FA <profile> <effect>` + block[0:29] at byte 5.

@@ -343,6 +343,9 @@ def lighting_block(light, transport):
     for key in ("speed", "brightness"):
         if not 0 <= light[key] <= 100:
             raise ProtocolError(f"{key} must be 0-100")
+    battery = light.get("battery_brightness")
+    if battery is not None and not 0 <= battery <= 100:
+        raise ProtocolError("battery brightness must be 0-100")
     colors = [parse_color(c) for c in light["colors"][: EFFECTS[effect][1]]]
 
     d = bytearray(256)
@@ -352,7 +355,9 @@ def lighting_block(light, transport):
     d[1] = brightness
     d[2] = len(colors)
     d[3] = speed
-    d[4] = brightness
+    # Byte 1 is used on the cable, byte 4 on battery; CORE copies one to the
+    # other unless "separate wired and wireless brightness" is on.
+    d[4] = brightness if battery is None else _brightness_level(battery)
     offset = 11 if transport == WIRED else 5
     for i, rgb in enumerate(colors):
         d[offset + 3 * i : offset + 3 * i + 3] = bytes(rgb)

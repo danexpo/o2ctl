@@ -43,6 +43,7 @@ def default_profile():
             "effect": "glorious",
             "speed": 60,
             "brightness": 60,
+            "battery_brightness": None,  # None: same as brightness
             "colors": list(DEFAULT_PALETTE),
         },
         "buttons": copy.deepcopy(P.DEFAULT_BINDINGS),
@@ -86,6 +87,8 @@ def normalise(state):
     for profile in state["profiles"]:
         colors = profile["lighting"]["colors"]
         profile["lighting"]["colors"] = (list(colors) + DEFAULT_PALETTE)[: P.MAX_COLORS]
+        if profile["lighting"]["battery_brightness"] not in range(0, 101):
+            profile["lighting"]["battery_brightness"] = None
         # Buttons are a mapping; keep only ones the mouse has, fill the rest.
         profile["buttons"] = {
             b: profile["buttons"].get(b, P.DEFAULT_BINDINGS[b]) for b in P.BUTTONS
