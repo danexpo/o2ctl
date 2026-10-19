@@ -14,7 +14,8 @@ distro. It covers what Glorious CORE does for this mouse:
   once, repeated while held, or repeated until pressed again
 - The three onboard profiles
 - Battery level. The dongle reports it about once a minute.
-- Firmware updates, over the cable (see `docs/FIRMWARE.md`)
+- Firmware updates over the cable, from the window menu (*Firmware…*) or
+  `o2ctl firmware update` (see `docs/FIRMWARE.md`)
 
 Connections: the 2.4 GHz dongle (`093a:822d`, tested) and the USB cable
 (`093a:822a`, built from the same protocol code but not tried on hardware

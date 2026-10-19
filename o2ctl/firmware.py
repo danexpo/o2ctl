@@ -137,11 +137,16 @@ def load_image(path, transport):
         return z.read(names[0])
 
 
-def download(cache_dir):
+def cache_dir():
+    return os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "o2ctl")
+
+
+def download(directory=None):
     """Glorious' firmware zip, downloaded once and checked."""
-    path = os.path.join(cache_dir, os.path.basename(FIRMWARE_URL))
+    directory = directory or cache_dir()
+    path = os.path.join(directory, os.path.basename(FIRMWARE_URL))
     if not os.path.exists(path):
-        os.makedirs(cache_dir, exist_ok=True)
+        os.makedirs(directory, exist_ok=True)
         with urllib.request.urlopen(FIRMWARE_URL, timeout=60) as r:
             data = r.read()
         if hashlib.sha256(data).hexdigest() != FIRMWARE_ZIP_SHA256:
@@ -152,14 +157,36 @@ def download(cache_dir):
     return path
 
 
+def official_image(transport):
+    """Glorious' latest image for the mouse (WIRED) or the dongle."""
+    image = load_image(download(), transport)
+    if image_info(image) != (transport, LATEST):
+        raise FirmwareError("the downloaded firmware is not the expected image")
+    return image
+
+
+def flash(dev, image, progress=None):
+    """Flash `image` onto `dev` (a device.Device), explaining how far it got on failure."""
+    flasher = Flasher(None, progress)
+    try:
+        with dev.raw() as hid:
+            flasher.hid = hid
+            flasher.update(image)
+    except RuntimeError as e:  # FirmwareError or device.DeviceError
+        if flasher.writing:
+            raise FirmwareError(f"{e}. The update stopped partway. Leave it plugged in and "
+                                "update again.") from None
+        raise FirmwareError(f"{e}. Nothing was written; the firmware is unchanged.") from None
+
+
 class Flasher:
     """Runs CORE's update sequence over `hid`, which has set_feature(packet)
     and get_feature() -> reply without the report ID."""
 
-    def __init__(self, hid, progress=None, sleep=time.sleep):
+    def __init__(self, hid, progress=None, sleep=None):
         self.hid = hid
         self.progress = progress or (lambda percent: None)
-        self.sleep = sleep
+        self.sleep = sleep or time.sleep
         self.seq = self.seq2 = 0
         self.ota = None
         self.version = None
@@ -215,6 +242,7 @@ class Flasher:
         self._init()
         self._object(0)
         total = offset = 0
+        shown = -1
         self.writing = True
         for i, piece in enumerate(pieces):
             offset += len(piece)
@@ -228,7 +256,10 @@ class Flasher:
                 self._crc(total)
                 self.sleep(0.05)
                 self._object(offset)
-            self.progress(100 * (i + 1) // len(pieces))
+            percent = 100 * (i + 1) // len(pieces)
+            if percent != shown:
+                self.progress(percent)
+                shown = percent
         self._crc(total)
         self._exchange(CMD_UPGRADE, 0x0C, bytes([CMD_UPGRADE]) + _le(len(image), 4)
                        + _le(sum(image) & 0xFFFF, 2) + version_field(self.version))

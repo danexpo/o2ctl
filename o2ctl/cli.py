@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import os
 import sys
 import time
 
@@ -344,40 +343,30 @@ def cmd_firmware_check(state, args):
 def cmd_firmware_update(state, args):
     dev = _firmware_target(args)
     if args.file:
-        source = args.file
+        image = F.load_image(args.file, dev.transport)
     else:
-        cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "o2ctl")
         print("Downloading the firmware from Glorious...")
-        source = F.download(cache)
-    image = F.load_image(source, dev.transport)
+        image = F.official_image(dev.transport)
     known = F.image_info(image)
     if known is None and not args.force:
-        raise F.FirmwareError(f"{source} is not a firmware image o2ctl knows; use --force to flash it anyway")
+        raise F.FirmwareError(f"{args.file} is not a firmware image o2ctl knows; use --force to flash it anyway")
     if known and known[0] != dev.transport:
         raise F.FirmwareError(f"that image is for the {'dongle' if known[0] == P.DONGLE else 'mouse'}, "
                               f"not the {_part(dev)}")
     version = known[1] if known else "unknown version"
     print(f"Flashing {version} ({len(image)} bytes) onto the {_part(dev)}, now on {dev.firmware or 'unknown'}.")
-    print("If this fails partway the {} may stop working, with no known way to recover it.".format(_part(dev)))
+    print(f"If this fails partway the {_part(dev)} may stop working, with no known way to recover it.")
     if not args.yes:
         if input("Type 'flash' to continue: ").strip() != "flash":
             print("Cancelled.")
             return 1
     print("Don't unplug it or press its buttons until this finishes.")
-    flasher = F.Flasher(None, progress=lambda pct: print(f"\r  {pct:3d}%", end="", flush=True))
     try:
-        with dev.raw() as hid:
-            flasher.hid = hid
-            flasher.update(image)
-    except (F.FirmwareError, D.DeviceError) as e:
+        F.flash(dev, image, progress=lambda pct: print(f"\r  {pct:3d}%", end="", flush=True))
+    finally:
         print()
-        if flasher.writing:
-            raise F.FirmwareError(f"{e}. The update stopped partway. Leave it plugged in and run "
-                                  "o2ctl firmware update again.") from None
-        raise F.FirmwareError(f"{e}. Nothing was written; the firmware is unchanged.") from None
-    print(f"\nDone. The {_part(dev)} is restarting.")
+    print(f"Done. The {_part(dev)} is restarting.")
     return 0
-
 
 def cmd_gui(state, args):
     from . import gui

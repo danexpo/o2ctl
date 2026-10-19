@@ -517,6 +517,21 @@ class FirmwareTest(unittest.TestCase):
         self.assertFalse(flasher.writing)
         self.assertNotIn(F.CMD_CONTENT, [p[6] for p in hid.sent])
 
+    def test_flash_says_how_far_it_got(self):
+        class Dev:
+            def __init__(self, hid):
+                self.hid = hid
+
+            def raw(self):
+                return contextlib.nullcontext(self.hid)
+
+        with unittest.mock.patch.object(F.time, "sleep", lambda s: None):
+            F.flash(Dev(FakeUpdater()), bytes(range(1, 11)))
+            with self.assertRaisesRegex(F.FirmwareError, "Nothing was written"):
+                F.flash(Dev(FakeUpdater(fail=F.CMD_INIT)), bytes(10))
+            with self.assertRaisesRegex(F.FirmwareError, "stopped partway"):
+                F.flash(Dev(FakeUpdater(fail=F.CMD_CRC)), bytes(range(1, 11)))
+
     def test_load_image_picks_the_folder_for_the_part(self):
         import zipfile
         with tempfile.TemporaryDirectory() as tmp:

@@ -15,6 +15,7 @@ from . import __version__, bindings, config  # noqa: E402
 from . import macros as M  # noqa: E402
 from . import battery as B  # noqa: E402
 from . import device as D  # noqa: E402
+from . import firmware as F  # noqa: E402
 from . import protocol as P  # noqa: E402
 
 APP_ID = "dev.o2ctl.Settings"
@@ -154,8 +155,10 @@ class Window(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Write all profiles and macros to mouse", "win.apply-all")
         menu.append("Reset this profile to defaults", "win.reset")
+        menu.append("Firmware…", "win.firmware")
         menu.append("About", "win.about")
-        for name, handler in (("apply-all", self.on_apply_all), ("reset", self.on_reset), ("about", self.on_about)):
+        for name, handler in (("apply-all", self.on_apply_all), ("reset", self.on_reset),
+                              ("firmware", self.on_firmware), ("about", self.on_about)):
             action = Gio.SimpleAction(name=name)
             action.connect("activate", handler)
             self.add_action(action)
@@ -197,6 +200,9 @@ class Window(Adw.ApplicationWindow):
 
         dialog.connect("response", done)
         dialog.present(self)
+
+    def on_firmware(self, *_):
+        FirmwareDialog().present(self)
 
     def on_about(self, *_):
         about = Adw.AboutDialog(
@@ -761,6 +767,121 @@ class Window(Adw.ApplicationWindow):
 
     def on_close(self, *_):
         self.closing = True
+        return False
+
+
+class FirmwareDialog(Adw.Dialog):
+    """Installed versions, and an update of the mouse over the cable."""
+
+    def __init__(self):
+        super().__init__(title="Firmware", content_width=440)
+        self.busy = False
+        self.closed = False
+        self.connect("closed", lambda *_: setattr(self, "closed", True))
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup(
+            description="The mouse is updated over the USB cable. The dongle can only be updated "
+                        "from the terminal, and that hasn't been tried yet.")
+        self.mouse_row = Adw.ActionRow(title="Mouse")
+        self.dongle_row = Adw.ActionRow(title="Dongle")
+        group.add(self.mouse_row)
+        group.add(self.dongle_row)
+        group.add(Adw.ActionRow(title="Latest from Glorious", subtitle=F.LATEST))
+        page.add(group)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=6)
+        self.button = Gtk.Button(label="Update mouse", halign=Gtk.Align.CENTER,
+                                 css_classes=["pill", "suggested-action"])
+        self.button.connect("clicked", self.on_update)
+        self.progress = Gtk.ProgressBar(show_text=True, visible=False)
+        self.status = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, css_classes=["dim-label"])
+        for widget in (self.button, self.progress, self.status):
+            box.append(widget)
+        actions = Adw.PreferencesGroup()
+        actions.add(box)
+        page.add(actions)
+
+        view = Adw.ToolbarView(content=page)
+        view.add_top_bar(Adw.HeaderBar())
+        self.set_child(view)
+        self.refresh()
+        GLib.timeout_add_seconds(2, self.refresh)
+
+    def wired(self):
+        return next((d for d in D.find_devices() if d.transport == P.WIRED), None)
+
+    def refresh(self):
+        if self.closed:
+            return False
+        found = {d.transport: d for d in D.find_devices()}
+        mouse, dongle = found.get(P.WIRED), found.get(P.DONGLE)
+        self.mouse_row.set_subtitle((mouse.firmware or "unknown") if mouse else "Plug in the cable to see its version")
+        self.dongle_row.set_subtitle((dongle.firmware or "unknown") if dongle else "Not plugged in")
+        if not self.busy:
+            self.button.set_sensitive(mouse is not None)
+            if mouse is None:
+                self.status.set_label("Plug the mouse in with the USB cable to update it.")
+            elif mouse.firmware == F.LATEST:
+                self.status.set_label("The mouse is up to date. Updating reinstalls the same version.")
+            else:
+                self.status.set_label("")
+        return True
+
+    def on_update(self, *_):
+        confirm = Adw.AlertDialog(
+            heading="Update the mouse firmware?",
+            body=f"This installs firmware {F.LATEST} from Glorious over the cable. Keep the cable plugged in "
+                 "and don't use the mouse until it finishes, about a minute.\n\n"
+                 "If it fails partway the mouse may stop working, with no known way to recover it.",
+        )
+        confirm.add_response("cancel", "Cancel")
+        confirm.add_response("update", "Update")
+        confirm.set_response_appearance("update", Adw.ResponseAppearance.DESTRUCTIVE)
+        confirm.connect("response", lambda d, r: r == "update" and self.start())
+        confirm.present(self)
+
+    def start(self):
+        dev = self.wired()
+        if dev is None:
+            self.status.set_label("The mouse isn't on the cable.")
+            return
+        self.busy = True
+        self.set_can_close(False)
+        self.button.set_sensitive(False)
+        self.progress.set_fraction(0)
+        self.progress.set_text("Downloading…")
+        self.progress.set_visible(True)
+        self.status.set_label("Don't unplug the mouse or press its buttons.")
+
+        def progress(percent):
+            GLib.idle_add(self.show_progress, percent)
+
+        def run():
+            try:
+                image = F.official_image(P.WIRED)
+                F.flash(dev, image, progress)
+            except (F.FirmwareError, D.DeviceError, OSError) as e:
+                GLib.idle_add(self.finish, str(e))
+            else:
+                GLib.idle_add(self.finish, None)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def show_progress(self, percent):
+        self.progress.set_fraction(percent / 100)
+        self.progress.set_text(f"Updating… {percent}%")
+        return False
+
+    def finish(self, error):
+        self.busy = False
+        self.set_can_close(True)
+        self.progress.set_visible(error is None)
+        if error is None:
+            self.progress.set_text("Done")
+            self.status.set_label("Done. The mouse restarted and is ready to use.")
+        else:
+            self.status.set_label(error)
+        self.refresh()
         return False
 
 
