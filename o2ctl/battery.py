@@ -1,9 +1,11 @@
 """Battery level: the cached last report, the watcher that keeps it fresh,
 and the status-bar output.
 
-The mouse can't be asked for its battery level. It sends a report on its
-own every minute or few, so `o2ctl watch` listens for those and caches the
-latest one; everything else (bar, `o2ctl battery`, the GUI) reads the cache.
+Through the dongle the mouse sends a report on its own every minute or few,
+so `o2ctl watch` listens for those. On the cable it sends none, but answers
+when asked, so the watcher asks once a minute. Either way it caches the
+latest reading; everything else (bar, `o2ctl battery`, the GUI) reads the
+cache.
 """
 
 import json
@@ -14,9 +16,11 @@ import tempfile
 import time
 
 from . import device as D
+from . import protocol as P
 
 LOW = (15, 5)             # notify when the level drops to each of these
 STALE = 15 * 60           # a reading this old means the mouse is asleep or off
+POLL = 60                 # seconds between questions over the cable, as CORE 1
 # The mouse stops reporting while it charges, so an old "charging" reading's
 # level is long out of date; show that it's charging, not the number.
 ICON = "\U000f037d"       # nerd font "mouse"
@@ -58,7 +62,7 @@ def describe(reading, now=None, wired=False):
     """'47%, charging · 12 min ago' style summary."""
     now = time.time() if now is None else now
     age = int(now - reading["time"])
-    if wired:
+    if wired and age >= STALE:
         return f"charging on the cable (last report {reading['level']}%, {_ago(age)})"
     if reading["charging"] and age >= STALE:
         return f"charging (was {reading['level']}% {_ago(age)}; no reports until unplugged)"
@@ -82,19 +86,18 @@ def bar_output(reading, connected, now=None, wired=False):
     """Waybar-style JSON for the Omarchy bar's command module.
 
     Empty text hides the module, which is what happens when neither the
-    dongle nor the cable is plugged in. On the cable the mouse charges and
-    sends no reports (Glorious CORE can't ask either; it shows "charging"
-    for as long as the cable is there), so show only the bolt.
+    dongle nor the cable is plugged in. On the cable the watcher asks for
+    the level; until it has a fresh answer, show only the bolt.
     """
     if not connected:
         return {"text": "", "tooltip": ""}
-    if wired:
+    now = time.time() if now is None else now
+    if wired and (reading is None or now - reading["time"] >= STALE):
         tip = f"Model O 2: {describe(reading, now, wired) if reading else 'charging on the cable'}"
         return {"text": f"{ICON} {CHARGING}", "tooltip": tip, "class": ["charging"]}
     if reading is None:
         return {"text": ICON, "tooltip": "Model O 2: waiting for the first battery report (can take a few minutes)",
                 "class": "unknown"}
-    now = time.time() if now is None else now
     level = reading["level"]
     stale = now - reading["time"] >= STALE
     if reading["charging"] and stale:
@@ -138,6 +141,14 @@ def notify(level, threshold):
                    check=False)
 
 
+def _handle(reading, alert, log):
+    record(reading)
+    log(f"Battery {reading['level']}%{' charging' if reading['charging'] else ''}.")
+    threshold = alert.check(reading["level"], reading["charging"])
+    if threshold is not None:
+        notify(reading["level"], threshold)
+
+
 def watch(log=print):
     """Cache every battery report until killed. Survives unplugging."""
     alert = LowBatteryAlert()
@@ -163,14 +174,15 @@ def watch(log=print):
             log(f"Listening on {dev.label} ({dev.path}).")
             announced = dev.path
         try:
-            for event in dev.events():
-                if event["event"] != "battery":
-                    continue
-                record(event)
-                log(f"Battery {event['level']}%{' charging' if event['charging'] else ''}.")
-                threshold = alert.check(event["level"], event["charging"])
-                if threshold is not None:
-                    notify(event["level"], threshold)
+            if dev.transport == P.WIRED:
+                reading = dev.query_battery()
+                if reading:
+                    _handle(reading, alert, log)
+            # Come back every POLL seconds: to ask again, or to switch to the
+            # cable once it's plugged in.
+            for event in dev.events(timeout=POLL):
+                if event["event"] == "battery":
+                    _handle(event, alert, log)
         except D.DeviceError as e:
             log(str(e))
             time.sleep(2)

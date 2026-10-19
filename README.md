@@ -97,10 +97,11 @@ other computers. The *Macros* tab in the window does the same as
 
 ## Battery in the bar
 
-The mouse can't be asked for its battery level; it sends a report on its own
-every one to few minutes. After a restart the bar shows the last cached
-level until the next report. The `o2ctl-watch` user service
-(`o2ctl watch`) listens for those reports, caches the latest in
+Through the dongle the mouse sends its battery level on its own every one
+to few minutes; on the cable it sends nothing but answers when asked. After a
+restart the bar shows the last cached level until the next report. The
+`o2ctl-watch` user service (`o2ctl watch`) listens for those reports, asks
+once a minute while the cable is in, caches the latest in
 `~/.local/state/o2ctl/battery.json` and sends a notification at 15 % and
 again at 5 %.
 

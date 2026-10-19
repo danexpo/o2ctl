@@ -589,6 +589,33 @@ class BatteryTest(unittest.TestCase):
         out = B.bar_output(None, True, now, wired=True)
         self.assertEqual(out["tooltip"], "Model O 2: charging on the cable")
 
+    def test_battery_query(self):
+        self.assertEqual(P.battery_query_packet(P.WIRED), hexpad("03 08 fa 14"))
+        # Real answers: over the cable, and through the dongle.
+        self.assertEqual(P.parse_battery_reply(bytes.fromhex("08146401") + bytes(59)),
+                         {"event": "battery", "level": 100, "charging": True})
+        self.assertEqual(P.parse_battery_reply(bytes.fromhex("08144000") + bytes(59))["level"], 64)
+        self.assertIsNone(P.parse_battery_reply(bytes.fromhex("0814ff00")))  # not answered yet
+        self.assertIsNone(P.parse_battery_reply(bytes(63)))
+        self.assertEqual(P.parse_battery_reply(bytes.fromhex("08140000"))["level"], 1)
+
+    def test_query_retries_until_answered(self):
+        replies = [bytes.fromhex("0814ff00"), bytes.fromhex("08145701")]
+        hid = unittest.mock.Mock(get_feature=lambda: replies.pop(0))
+        dev = D.Device("/dev/hidraw9", P.WIRED)
+        with unittest.mock.patch.object(dev, "raw", lambda: contextlib.nullcontext(hid)), \
+                unittest.mock.patch.object(D.time, "sleep", lambda s: None):
+            self.assertEqual(dev.query_battery()["level"], 87)
+        self.assertEqual(hid.set_feature.call_count, 2)
+
+    def test_bar_on_cable_with_fresh_answer_shows_level(self):
+        now = 10000.0
+        reading = {"level": 87, "charging": True, "time": now - 30}
+        out = B.bar_output(reading, True, now, wired=True)
+        self.assertEqual(out["text"], f"{B.ICON} 87% {B.CHARGING}")
+        self.assertEqual(out["tooltip"], "Model O 2: 87%, charging")
+        self.assertEqual(B.describe(reading, now, wired=True), "87%, charging")
+
     def test_bar_stale_charging_hides_level(self):
         # Seen on hardware: no reports while on the cable, so the level froze at 3%.
         now = 10000.0

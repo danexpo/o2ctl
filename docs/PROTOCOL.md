@@ -146,7 +146,9 @@ is `08 14 <level %> <charging>`. **Verified**: over the cable `08 14 64 01`
 (100 %, charging); through the dongle, with the mouse on the cable at the
 time, `08 14 40 00`, the 64 % it last had on battery, so the dongle may answer
 from what it last heard. CORE 1 polls this instead of waiting for `06 FB`
-reports. o2ctl doesn't use it yet.
+reports. o2ctl asks over the cable only, once a minute, where the mouse
+sends no reports of its own. CORE 1 also never polls this mouse through
+the dongle.
 
 ## Events (input report 6 on the same interface)
 

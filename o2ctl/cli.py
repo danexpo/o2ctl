@@ -283,7 +283,12 @@ def cmd_battery(state, args):
         if out["text"]:  # print nothing to hide: the Omarchy bar shows raw output for empty "text"
             print(json.dumps(out, ensure_ascii=False))
         return 0
-    if args.wait:
+    dev = D.find_device()
+    if dev is not None and dev.transport == P.WIRED:
+        reading = dev.query_battery()
+        if reading:
+            B.record(reading)
+    elif args.wait:
         dev = _device_or_none()
         if dev is None:
             return 1
@@ -298,7 +303,7 @@ def cmd_battery(state, args):
     if not reading:
         print("No battery reading yet (run o2ctl watch, or: o2ctl battery --wait 90)")
         return 1
-    print(B.describe(reading))
+    print(B.describe(reading, wired=dev is not None and dev.transport == P.WIRED))
     return 0
 
 

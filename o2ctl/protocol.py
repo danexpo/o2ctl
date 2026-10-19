@@ -33,6 +33,8 @@ CMD_BUTTONS = 0x03
 CMD_PERFORMANCE = 0x04
 CMD_MACRO = 0x05
 CMD_SLEEP = 0x06
+CMD_BATTERY = 0x08
+BATTERY_QUERY = 0x14
 
 PROFILE_COUNT = 3
 DPI_MIN = 100
@@ -491,6 +493,23 @@ def macro_packets(macro_id, steps, transport):
         p[at : at + len(part)] = part
         packets.append(p)
     return packets
+
+
+def battery_query_packet(transport):
+    """Ask for the battery level; the answer is read back as feature report 3."""
+    _check_transport(transport)
+    return _packet(REPORT_ID, CMD_BATTERY, ROUTE[transport], BATTERY_QUERY)
+
+
+def parse_battery_reply(reply):
+    """Feature report 3 (report ID removed) after a battery query: 08 14 level charging.
+
+    None when it isn't an answer, or the mouse hasn't answered yet (level FF).
+    """
+    if len(reply) < 4 or reply[0] != CMD_BATTERY or reply[1] != BATTERY_QUERY or reply[2] > 100:
+        return None
+    # CORE 1 shows 0 as 1, presumably so an almost empty mouse isn't shown as off.
+    return {"event": "battery", "level": max(reply[2], 1), "charging": reply[3] != 0}
 
 
 def parse_event(report):

@@ -131,6 +131,23 @@ class Device:
                 os.close(fd)
                 self._last_write = time.monotonic()
 
+    def query_battery(self, tries=3):
+        """Ask the mouse for its battery level, as CORE 1 does: write, wait, read.
+
+        Only worth doing over the cable. The dongle answers too, but with the
+        last level it heard, even when the mouse is off or on the cable.
+        """
+        packet = P.battery_query_packet(self.transport)
+        with self.raw() as hid:
+            for _ in range(tries):
+                hid.set_feature(packet)
+                time.sleep(0.05)
+                reading = P.parse_battery_reply(hid.get_feature())
+                if reading:
+                    return reading
+                time.sleep(0.05)
+        return None
+
     def activate_profile(self, number):
         self.send(P.profile_packet(number, self.transport), DELAYS[self.transport]["profile"],
                   gap=PROFILE_SETTLE[self.transport])
