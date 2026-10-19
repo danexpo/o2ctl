@@ -489,7 +489,8 @@ def build_parser():
     s = sub.add_parser("bind", parents=[common], help="remap a button",
                        description="Actions: " + ", ".join(P.MOUSE_ACTIONS) +
                        ", dpi-shift:DPI, media:" + "|".join(P.MEDIA_ACTIONS) +
-                       ", key:COMBO (e.g. key:ctrl+c), macro:NAME[:once|repeat|toggle], default")
+                       ", key:COMBO (e.g. key:ctrl+c), macro:NAME[:once|repeat|toggle], "
+                       "command:CMD (run by o2ctl watch on this computer), default")
     s.add_argument("button", choices=P.BUTTONS)
     s.add_argument("action")
     s.set_defaults(func=cmd_bind)

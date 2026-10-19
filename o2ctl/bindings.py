@@ -5,6 +5,7 @@
     media:play-pause                         a media key
     key:ctrl+shift+f5                        a keystroke with modifiers
     macro:NAME, macro:NAME:repeat            a saved macro (once, repeat, toggle)
+    command:CMD                              run a shell command on this computer
 
 Macro bindings refer to the macro by id; `macros` is the saved macro list
 (state["macros"]) used to turn names into ids and back.
@@ -21,6 +22,10 @@ def parse(text, macros=()):
     text = text.strip()
     if text.lower().startswith("macro:"):
         return parse_macro(text[6:], macros)
+    if text.lower().startswith("command:"):
+        binding = {"type": "command", "command": text[8:].strip()}
+        P.binding_slot(binding)
+        return binding
     text = text.lower()
     if text in P.MOUSE_ACTIONS:
         return {"type": "mouse", "action": text}
@@ -84,6 +89,8 @@ def format(binding, macros=()):
         return f"media:{binding['action']}"
     if kind == "key":
         return "key:" + "+".join(list(binding.get("modifiers", [])) + [str(binding["key"])])
+    if kind == "command":
+        return f"command:{binding['command']}"
     return "?"
 
 
@@ -101,4 +108,6 @@ def describe(binding, macros=()):
     if kind == "key":
         names = [m.capitalize() for m in binding.get("modifiers", [])] + [str(binding["key"]).upper()]
         return "Key " + "+".join(names)
+    if kind == "command":
+        return f"Run: {binding['command']}"
     return "Unknown"

@@ -488,15 +488,18 @@ class Window(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(
             title="Buttons",
             description="Keystrokes use key names like a, f5, space, enter, with modifiers ctrl, shift, alt, super "
-                        "(e.g. ctrl+shift+t).")
+                        "(e.g. ctrl+shift+t). Commands run on this computer through the o2ctl watcher, "
+                        "so only while it's running.")
         # One flat choice list: mouse actions, DPI shift, media keys, keystroke.
         self.choices = [("mouse", a) for a in P.MOUSE_ACTIONS]
         self.choices.append(("dpi-shift", None))
         self.choices += [("media", a) for a in P.MEDIA_ACTIONS]
         self.choices.append(("key", None))
         self.choices.append(("macro", None))
+        self.choices.append(("command", None))
         labels = [P.MOUSE_ACTION_LABELS[a] for a in P.MOUSE_ACTIONS] + ["DPI shift (hold)…"]
-        labels += [P.MEDIA_ACTION_LABELS[a] for a in P.MEDIA_ACTIONS] + ["Keystroke…", "Macro…"]
+        labels += [P.MEDIA_ACTION_LABELS[a] for a in P.MEDIA_ACTIONS] + ["Keystroke…", "Macro…",
+                                                                          "Run a command…"]
         self.mode_names = list(P.MACRO_MODES)
 
         self.button_rows = {}
@@ -511,14 +514,16 @@ class Window(Adw.ApplicationWindow):
             macro = Adw.ComboRow(title="Macro", model=Gtk.StringList(), visible=False)
             mode = Adw.ComboRow(title="Plays", visible=False,
                                 model=Gtk.StringList.new([P.MACRO_MODE_LABELS[m] for m in self.mode_names]))
+            command = Adw.EntryRow(title="Command", show_apply_button=True, visible=False)
             combo.connect("notify::selected", self.on_binding_choice, button)
             keys.connect("apply", self.on_binding_keys, button)
+            command.connect("apply", self.on_binding_command, button)
             shift.connect("notify::value", self.on_binding_shift, button)
             macro.connect("notify::selected", self.on_binding_macro, button)
             mode.connect("notify::selected", self.on_binding_macro, button)
-            for row in (combo, keys, shift, macro, mode):
+            for row in (combo, keys, shift, macro, mode, command):
                 group.add(row)
-            self.button_rows[button] = (combo, keys, shift, macro, mode)
+            self.button_rows[button] = (combo, keys, shift, macro, mode, command)
         page.add(group)
         return page
 
@@ -534,12 +539,12 @@ class Window(Adw.ApplicationWindow):
         self.with_loading(fill)
 
     def show_macro_rows(self, button, visible):
-        _, _, _, macro, mode = self.button_rows[button]
+        _, _, _, macro, mode, _ = self.button_rows[button]
         macro.set_visible(visible)
         mode.set_visible(visible)
 
     def show_binding(self, button):
-        combo, keys, shift, macro, mode = self.button_rows[button]
+        combo, keys, shift, macro, mode, command = self.button_rows[button]
         binding = self.prof["buttons"][button]
         kind = binding["type"]
         if kind == "macro":
@@ -554,24 +559,32 @@ class Window(Adw.ApplicationWindow):
         elif kind == "key":
             choice = ("key", None)
             keys.set_text(bindings.format(binding).removeprefix("key:"))
+        elif kind == "command":
+            choice = ("command", None)
+            command.set_text(binding["command"])
         else:
             choice = (kind, binding["action"])
         combo.set_selected(self.choices.index(choice) if choice in self.choices else 0)
         keys.set_visible(choice[0] == "key")
         shift.set_visible(choice[0] == "dpi-shift")
+        command.set_visible(choice[0] == "command")
         self.show_macro_rows(button, choice[0] == "macro")
 
     def on_binding_choice(self, combo, _pspec, button):
         kind, action = self.choices[combo.get_selected()]
-        _, keys, shift, macro, mode = self.button_rows[button]
+        _, keys, shift, macro, mode, command = self.button_rows[button]
         keys.set_visible(kind == "key")
         shift.set_visible(kind == "dpi-shift")
+        command.set_visible(kind == "command")
         self.show_macro_rows(button, kind == "macro")
         if self.loading:
             return
         if kind == "key":
             keys.grab_focus()
             return  # written once a combination is applied
+        if kind == "command":
+            command.grab_focus()
+            return
         if kind == "macro":
             if not self.state["macros"]:
                 self.show_error("No macros yet. Make one on the Macros page first.")
@@ -596,10 +609,21 @@ class Window(Adw.ApplicationWindow):
         self.prof["buttons"][button] = binding
         self.changed("buttons")
 
+    def on_binding_command(self, entry, button):
+        try:
+            binding = bindings.parse("command:" + entry.get_text())
+        except P.ProtocolError as e:
+            entry.add_css_class("error")
+            self.show_error(str(e))
+            return
+        entry.remove_css_class("error")
+        self.prof["buttons"][button] = binding
+        self.changed("buttons")
+
     def on_binding_macro(self, _row, _pspec, button):
         if self.loading or not self.state["macros"]:
             return
-        _, _, _, macro, mode = self.button_rows[button]
+        _, _, _, macro, mode, _ = self.button_rows[button]
         chosen = self.state["macros"][min(macro.get_selected(), len(self.state["macros"]) - 1)]
         self.prof["buttons"][button] = {"type": "macro", "macro": chosen["id"],
                                         "mode": self.mode_names[mode.get_selected()]}

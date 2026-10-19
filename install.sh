@@ -33,14 +33,14 @@ update-desktop-database "$apps_dir" 2>/dev/null || true
 
 echo "Installed: $bin_dir/o2ctl and the \"Model O 2 Settings\" launcher entry."
 
-# Battery watcher: caches the level the mouse reports and warns when it's low.
+# Watcher: caches the battery level, warns when it's low, runs button commands.
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$unit_dir"
 install -m644 "$repo/data/o2ctl-watch.service" "$unit_dir/o2ctl-watch.service"
 systemctl --user daemon-reload
 systemctl --user enable --now o2ctl-watch.service >/dev/null
 systemctl --user restart o2ctl-watch.service
-echo "Started the battery watcher (systemctl --user status o2ctl-watch)."
+echo "Started the watcher (systemctl --user status o2ctl-watch)."
 
 # Omarchy bar: add a battery module once, next to Bluetooth. Remove it from
 # the bar layout in ~/.config/omarchy/shell.json and it stays removed.

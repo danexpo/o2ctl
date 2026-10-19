@@ -98,6 +98,7 @@ the cable.
 | `02 mm kk 00` | key: HID usage `kk`, modifiers `mm` (1 ctrl, 2 shift, 4 alt, 8 super). |
 | `03 lo hi 00` | consumer usage, e.g. `03 cd 00` play/pause. |
 | `77 00 00 00` | show battery level. |
+| `04 01 00 00` | host shortcut: the mouse sends a press event (below) and the host acts on it. CORE launches a program or website; o2ctl's watcher runs a command. |
 | `00 00 00 00` | disabled. |
 | `1F+id mode 00 00` | macro `id` (1-based, so the first is `20`). Mode: `01` play once, `E0` repeat while held, `E1` repeat until pressed again. |
 
@@ -160,7 +161,8 @@ the dongle.
 |--------|---------|
 | `06 FB <level> <charging>` | battery; sent about every 65 s over the dongle (**verified**: `06 fb 2f 00` = 47 %); after the first `charging` report none arrive until unplugged (seen 2026-09-27: 2.5 h silent, then 98 %), and none arrive over the cable at all. Over the cable, ask with `08` instead (see above). |
 | `06 F6 <index>` | the mouse switched profile itself (0-based) |
-| `06 F9 <≥80> <slot>` | button bound to a host shortcut was pressed |
+| `06 F9 <≥80> <slot> <layer>` | a button bound to `04 01` was pressed, through the dongle (**verified**) |
+| `04 F7 <≥80> <slot>` | the same over the cable (**verified**) |
 | `04 F1 <1-3>` | profile change over the cable; `04 F1 A0` = reset to default |
 
 ## Timing (dongle)

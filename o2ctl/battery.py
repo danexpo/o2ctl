@@ -5,7 +5,7 @@ Through the dongle the mouse sends a report on its own every minute or few,
 so `o2ctl watch` listens for those. On the cable it sends none, but answers
 when asked, so the watcher asks once a minute. Either way it caches the
 latest reading; everything else (bar, `o2ctl battery`, the GUI) reads the
-cache.
+cache. The watcher also runs the commands bound to buttons (shortcuts.py).
 """
 
 import json
@@ -17,6 +17,7 @@ import time
 
 from . import device as D
 from . import protocol as P
+from . import shortcuts
 
 LOW = (15, 5)             # notify when the level drops to each of these
 STALE = 15 * 60           # a reading this old means the mouse is asleep or off
@@ -150,7 +151,8 @@ def _handle(reading, alert, log):
 
 
 def watch(log=print):
-    """Cache every battery report until killed. Survives unplugging."""
+    """Cache every battery report and run button commands until killed.
+    Survives unplugging."""
     alert = LowBatteryAlert()
     reading = load()
     if reading:
@@ -183,6 +185,8 @@ def watch(log=print):
             for event in dev.events(timeout=POLL):
                 if event["event"] == "battery":
                     _handle(event, alert, log)
+                else:
+                    shortcuts.handle(event, log)
         except D.DeviceError as e:
             log(str(e))
             time.sleep(2)

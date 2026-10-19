@@ -14,6 +14,7 @@ from o2ctl import device as D  # noqa: E402
 from o2ctl import firmware as F  # noqa: E402
 from o2ctl import macros as M  # noqa: E402
 from o2ctl import protocol as P  # noqa: E402
+from o2ctl import shortcuts  # noqa: E402
 
 
 def hexpad(text):
@@ -678,3 +679,51 @@ class BatteryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShortcutTest(unittest.TestCase):
+    def test_command_binding_slot_and_text(self):
+        binding = bindings.parse("command:notify-send 'Hi There'")
+        self.assertEqual(binding, {"type": "command", "command": "notify-send 'Hi There'"})
+        self.assertEqual(P.binding_slot(binding), bytes([4, 1, 0, 0]))
+        self.assertEqual(bindings.format(binding), "command:notify-send 'Hi There'")
+        self.assertEqual(bindings.describe(binding), "Run: notify-send 'Hi There'")
+        with self.assertRaises(P.ProtocolError):
+            bindings.parse("command:  ")
+
+    def test_press_events(self):
+        # Dongle: 06 F9 <press> <slot> <layer>; cable: 04 F7 <press> <slot>.
+        self.assertEqual(P.parse_event(bytes([6, 0xF9, 0x80, 4, 0])), {"event": "button", "button": "forward"})
+        self.assertEqual(P.parse_event(bytes([4, 0xF7, 0x81, 5])), {"event": "button", "button": "dpi"})
+        self.assertIsNone(P.parse_event(bytes([6, 0xF9, 0x00, 4, 0])))  # not a press
+        self.assertIsNone(P.parse_event(bytes([6, 0xF9, 0x80, 9, 0])))  # no such button
+
+    def state(self, profile=1):
+        state = config.default_state()
+        state["active_profile"] = profile
+        config.profile(state, 2)["buttons"]["forward"] = {"type": "command", "command": "echo hi"}
+        return state
+
+    def test_runs_the_active_profiles_command(self):
+        started, log = [], []
+        for profile in (1, 2):
+            shortcuts.handle({"event": "button", "button": "forward"}, log.append,
+                             load=lambda: self.state(profile), start=started.append)
+        self.assertEqual(started, ["echo hi"])
+
+    def test_profile_event_updates_saved_profile(self):
+        saved = []
+        shortcuts.handle({"event": "profile", "profile": 2}, lambda m: None,
+                         load=self.state, save=saved.append)
+        self.assertEqual(saved[0]["active_profile"], 2)
+        saved.clear()
+        shortcuts.handle({"event": "profile", "profile": 1}, lambda m: None,
+                         load=self.state, save=saved.append)
+        self.assertEqual(saved, [])  # already there
+
+    def test_bad_config_is_logged(self):
+        log = []
+        def broken():
+            raise ValueError("bad json")
+        shortcuts.handle({"event": "button", "button": "forward"}, log.append, load=broken)
+        self.assertIn("bad json", log[0])

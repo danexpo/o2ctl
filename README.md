@@ -10,7 +10,8 @@ distro. It covers what Glorious CORE does for this mouse:
 - Lighting: all 9 onboard effects, with brightness, speed and colours, a
   separate brightness on battery, and all lights off after 1–15 idle minutes
 - Button remapping: mouse functions, DPI up/down/cycle/shift, profile cycling,
-  media keys, keystrokes with modifiers, macros, or disabled
+  media keys, keystrokes with modifiers, macros, shell commands run on the
+  computer (by the watcher), or disabled
 - Macros: up to 16, stored on the mouse and shared by all profiles, played
   once, repeated while held, or repeated until pressed again
 - The three onboard profiles
@@ -28,8 +29,8 @@ Connections: the 2.4 GHz dongle (`093a:822d`) and the USB cable
 ```
 
 This puts `o2ctl` in `~/.local/bin`, adds a **Model O 2 Settings** entry
-to the app launcher (Super + Space on Omarchy), starts the battery watcher
-and adds the mouse battery to the Omarchy bar. You need system
+to the app launcher (Super + Space on Omarchy), starts the watcher (battery
+level and button commands) and adds the mouse battery to the Omarchy bar. You need system
 `python-gobject` and `libadwaita`, which Omarchy already ships.
 
 Access without root needs a udev rule. The installer prints the two sudo
@@ -62,6 +63,7 @@ o2ctl bind forward media:volume-up
 o2ctl bind back key:ctrl+c
 o2ctl bind dpi dpi-shift:400           # sniper button
 o2ctl bind forward default
+o2ctl bind dpi 'command:notify-send Hello'    # runs here, while o2ctl watch is running
 o2ctl macro set copy-paste ctrl+c 100ms ctrl+v
 o2ctl bind forward macro:copy-paste    # :repeat or :toggle to repeat it
 o2ctl macro list                       # macros and the buttons that play them

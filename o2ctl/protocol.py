@@ -193,6 +193,11 @@ MACRO_MODE_LABELS = {
 # Mouse buttons a macro can press, as the mouse numbers them in macro steps.
 MACRO_BUTTONS = {"left": 0xB7, "right": 0xB8, "middle": 0xB9, "back": 0xBA, "forward": 0xBB}
 
+# A button bound to this does nothing on the mouse; pressing it sends a
+# button event (see parse_event) and CORE launches a program or website.
+HOST_SHORTCUT_SLOT = bytes([4, 1, 0, 0])
+BUTTON_AT_SLOT = {slot: button for button, slot in BUTTON_SLOT.items()}
+
 DEFAULT_BINDINGS = {
     "left": {"type": "mouse", "action": "left-click"},
     "right": {"type": "mouse", "action": "right-click"},
@@ -412,6 +417,11 @@ def binding_slot(binding):
             raise ProtocolError(f"unknown media action: {action}")
         usage = MEDIA_ACTIONS[action]
         return bytes([3, usage & 0xFF, usage >> 8, 0])
+    if kind == "command":
+        if not str(binding.get("command", "")).strip():
+            raise ProtocolError("the command is empty")
+        # The mouse only reports the press; the host runs the command.
+        return HOST_SHORTCUT_SLOT
     if kind == "macro":
         macro_id = binding.get("macro")
         if not isinstance(macro_id, int) or not 1 <= macro_id <= MAX_MACROS:
@@ -523,7 +533,9 @@ def parse_event(report):
     Report 6 carries status: 0xFB is a battery update (the dongle sends one
     about once a minute), 0xF6 means the mouse switched profile by itself
     (index 0-2). Report 4 with 0xF1 is the wired profile change (1-3). The
-    mouse sends nothing when the host switches profile.
+    mouse sends nothing when the host switches profile. A press of a button
+    bound to HOST_SHORTCUT_SLOT is report 6 0xF9 (dongle) or report 4 0xF7
+    (cable), then a byte of 0x80 or more, then the button's slot.
     """
     if len(report) < 3:
         return None
@@ -537,4 +549,8 @@ def parse_event(report):
         return {"event": "profile", "profile": report[2] + 1}
     if rid == 4 and kind == 0xF1 and 1 <= report[2] <= PROFILE_COUNT:
         return {"event": "profile", "profile": report[2]}
+    if (rid, kind) in ((6, 0xF9), (4, 0xF7)) and len(report) >= 4 and report[2] >= 0x80:
+        button = BUTTON_AT_SLOT.get(report[3])
+        if button:
+            return {"event": "button", "button": button}
     return None
